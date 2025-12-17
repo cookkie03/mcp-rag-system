@@ -1,0 +1,29 @@
+# RAG System - Configurazione
+
+# Percorsi
+documents_path: "./data"
+vectorstore_path: "./qdrant_storage"
+
+# Embedding
+embedding_model: "models/text-embedding-004"
+embedding_dimensions: 768
+
+# Chunking
+chunk_size: 1024
+chunk_overlap: 200
+
+# Ricerca
+top_k: 5
+similarity_threshold: 0.7
+
+# LLM
+model: "gemini-3-pro-preview"
+temperature: 0.2
+max_tokens: 2048
+
+# Server MCP
+mcp_port: 8080
+mcp_host: "127.0.0.1"
+
+# Logging
+log_level: "INFO"
