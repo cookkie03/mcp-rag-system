@@ -45,10 +45,11 @@ env/
 .qodo
 
 # Project specific
-qdrant_storage/*
 *.log
 .cache/
 
 # Dati sensibili o pesanti
 data/*
 !data/.keep
+qdrant_storage/*
+!qdrant_storage/.keep
