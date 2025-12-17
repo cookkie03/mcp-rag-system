@@ -41,9 +41,11 @@ env/
 *.swo
 *~
 .DS_Store
+.claude
+.qodo
 
 # Project specific
-qdrant_storage/
+qdrant_storage/*
 *.log
 .cache/
 
