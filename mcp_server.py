@@ -43,14 +43,14 @@ collection_name = "documents"
 
 
 @mcp.tool()
-def search_documents(query: str, top_k: int = 5) -> str:
+def search_documents(query: str, top_k: int = 10) -> str:
     """
     Ricerca documenti nella knowledge base aziendale.
     Usa questo tool quando l'utente fa domande su documenti, procedure o dati interni indicizzati.
 
     Args:
         query: La frase o domanda da cercare.
-        top_k: Numero di risultati da ritornare (default 5).
+        top_k: Numero di risultati da ritornare (default 10).
     """
     try:
         # Genera embedding query

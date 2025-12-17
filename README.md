@@ -29,6 +29,7 @@ cp .env.example .env     # Linux/Mac
 ```
 
 Modifica `.env`:
+
 ```
 GOOGLE_API_KEY=la_tua_chiave_qui
 ```
@@ -40,11 +41,17 @@ GOOGLE_API_KEY=la_tua_chiave_qui
 Copia i tuoi documenti nella cartella `data/`, poi:
 
 ```bash
-python ingest.py           # Aggiunge nuovi documenti
-python ingest.py --clean   # Pulisce DB e re-ingestisce tutto
+python ingest.py           # Ingestione incrementale (solo nuovi/modificati)
+python ingest.py --clean   # Pulisce tutto e re-ingestisce da zero
 ```
 
-**Quando usare `--clean`**: Dopo aver modificato o eliminato documenti esistenti.
+**Ingestione Incrementale**: Lo script tiene traccia dei file già processati:
+
+- **File nuovi** → Vengono processati e aggiunti
+- **File invariati** → Vengono saltati automaticamente
+- **File modificati** → I vecchi chunk vengono eliminati e sostituiti con i nuovi
+
+**Quando usare `--clean`**: Solo se vuoi ripartire da zero (es. cambio modello embedding).
 
 ### 2. Chatbot Interattivo
 
@@ -53,6 +60,7 @@ python chat.py
 ```
 
 Comandi disponibili:
+
 - `/help` - Mostra aiuto
 - `/stats` - Statistiche database
 - `/exit` - Esci
@@ -74,6 +82,7 @@ Server disponibile su `http://127.0.0.1:8080`
 | GET | `/tools` | Tool disponibili |
 
 **Esempio ricerca:**
+
 ```bash
 curl -X POST http://127.0.0.1:8080/search \
   -H "Content-Type: application/json" \
@@ -97,15 +106,15 @@ Aggiungi al tuo client MCP:
 
 ## Formati Supportati (60+)
 
-| Categoria | Formati |
-|-----------|---------|
-| **Office** | PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, ODT, ODP, ODS |
-| **Web** | HTML, HTM, MHTML, XML, MD, RST, TEX |
-| **Codice** | PY, IPYNB, JS, TS, JSON, YAML, JAVA, CPP, GO, e altri |
-| **Audio** | MP3, WAV, M4A, FLAC, OGG, AAC (trascrizione automatica) |
-| **Immagini** | PNG, JPG, GIF, BMP, TIFF, WEBP, SVG (OCR automatico) |
-| **Sottotitoli** | VTT, SRT, ASS, SSA |
-| **Archivi** | ZIP, TAR, GZ, RAR, 7Z (estrazione automatica) |
+| Categoria       | Formati                                                 |
+| --------------- | ------------------------------------------------------- |
+| **Office**      | PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, ODT, ODP, ODS     |
+| **Web**         | HTML, HTM, MHTML, XML, MD, RST, TEX                     |
+| **Codice**      | PY, IPYNB, JS, TS, JSON, YAML, JAVA, CPP, GO, e altri   |
+| **Audio**       | MP3, WAV, M4A, FLAC, OGG, AAC (trascrizione automatica) |
+| **Immagini**    | PNG, JPG, GIF, BMP, TIFF, WEBP, SVG (OCR automatico)    |
+| **Sottotitoli** | VTT, SRT, ASS, SSA                                      |
+| **Archivi**     | ZIP, TAR, GZ, RAR, 7Z (estrazione automatica)           |
 
 ## Configurazione
 
@@ -113,24 +122,24 @@ Modifica `config.yaml` per personalizzare:
 
 ```yaml
 # Percorsi
-documents_path: "./data"        # Cartella documenti
-vectorstore_path: "./qdrant_storage"  # Database vettoriale
+documents_path: "./data" # Cartella documenti
+vectorstore_path: "./qdrant_storage" # Database vettoriale
 
 # Elaborazione
-chunk_size: 1024                # Dimensione chunk
-chunk_overlap: 200              # Sovrapposizione chunk
+chunk_size: 1024 # Dimensione chunk
+chunk_overlap: 200 # Sovrapposizione chunk
 
 # Ricerca
-top_k: 5                        # Risultati per query
-similarity_threshold: 0.7       # Soglia similarita (0-1)
+top_k: 5 # Risultati per query
+similarity_threshold: 0.7 # Soglia similarita (0-1)
 
 # LLM
-model: "gemini-2.0-flash-exp"   # Modello Gemini
-temperature: 0.7                # Creativita (0-1)
+model: "gemini-2.0-flash-exp" # Modello Gemini
+temperature: 0.7 # Creativita (0-1)
 
 # Server
-mcp_port: 8080                  # Porta server
-mcp_host: "127.0.0.1"           # Host server
+mcp_port: 8080 # Porta server
+mcp_host: "127.0.0.1" # Host server
 ```
 
 ## Struttura Progetto
@@ -138,7 +147,10 @@ mcp_host: "127.0.0.1"           # Host server
 ```
 rag-system/
 ├── data/               # Metti i documenti qui
-├── qdrant_storage/     # Database (auto-generato)
+├── qdrant_storage/     # Database vettoriale (auto-generato)
+│   ├── collection/     # Dati Qdrant
+│   ├── .ingested_files.json  # Registry file processati
+│   └── ingestion_errors.log  # Log errori (se presenti)
 ├── ingest.py           # Script ingestione
 ├── chat.py             # Chatbot interattivo
 ├── mcp_server.py       # Server MCP
@@ -151,14 +163,10 @@ rag-system/
 
 ## Troubleshooting
 
-| Problema | Soluzione |
-|----------|-----------|
-| `GOOGLE_API_KEY non trovata` | Crea `.env` con `GOOGLE_API_KEY=...` |
-| `Nessun documento trovato` | Copia file nella cartella `data/` |
-| `Porta 8080 in uso` | Cambia `mcp_port` in `config.yaml` |
-| `ModuleNotFoundError` | Esegui `pip install -r requirements.txt` |
-| `Errore embedding` | Verifica che la API key sia valida |
-
-## Licenza
-
-MIT License
+| Problema                     | Soluzione                                |
+| ---------------------------- | ---------------------------------------- |
+| `GOOGLE_API_KEY non trovata` | Crea `.env` con `GOOGLE_API_KEY=...`     |
+| `Nessun documento trovato`   | Copia file nella cartella `data/`        |
+| `Porta 8080 in uso`          | Cambia `mcp_port` in `config.yaml`       |
+| `ModuleNotFoundError`        | Esegui `pip install -r requirements.txt` |
+| `Errore embedding`           | Verifica che la API key sia valida       |
