@@ -20,18 +20,22 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     return logging.getLogger(__name__)
 
 
-def load_config(config_path: str = "config.yaml") -> dict:
-    """Carica configurazione YAML"""
-    if not os.path.exists(config_path):
+def load_config(config_path = "config.yaml") -> dict:
+    """Carica configurazione YAML (accetta str o Path)"""
+    config_path = Path(config_path)
+    if not config_path.exists():
         raise FileNotFoundError(f"Config non trovata: {config_path}")
     
     with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
-def load_environment():
-    """Carica variabili ambiente da .env"""
-    load_dotenv()
+def load_environment(env_path = None):
+    """Carica variabili ambiente da .env (accetta str o Path)"""
+    if env_path:
+        load_dotenv(Path(env_path))
+    else:
+        load_dotenv()
 
 
 def get_api_key(key_name: str = "GOOGLE_API_KEY") -> str:

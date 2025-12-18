@@ -43,6 +43,7 @@ env/
 .DS_Store
 .claude
 .qodo
+.cli_cache/
 
 # Project specific
 *.log

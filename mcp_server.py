@@ -1,27 +1,80 @@
 """MCP Server - RAG Search Tool"""
+import sys
+import os
 
+# === FIX WINDOWS: Forza newline Unix per MCP ===
+if sys.platform == "win32":
+    sys.stdout.reconfigure(newline='\n')
+    sys.stderr.reconfigure(newline='\n')
+
+# === Configurazione ambiente PRIMA di qualsiasi import ===
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+import warnings
+warnings.filterwarnings('ignore')
+
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
-from qdrant_client import QdrantClient
+
+# === Setup progetto ===
+PROJECT_DIR = Path(__file__).parent.resolve()
+
+def _load_config():
+    import yaml
+    config_path = PROJECT_DIR / "config.yaml"
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+CONFIG = _load_config()
+
+# === Pre-caricamento modello e Qdrant (EAGER LOADING) ===
+sys.stderr.write("[MCP] Caricamento modello AI...\n")
+sys.stderr.flush()
+
 from sentence_transformers import SentenceTransformer
-from utils import load_config, load_environment
+from qdrant_client import QdrantClient
 
-load_environment()
-config = load_config("config.yaml")
+MODEL = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+QDRANT = QdrantClient(path=str(PROJECT_DIR / CONFIG['vectorstore_path']))
 
-mcp = FastMCP("RAG Search")
-model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
-qdrant = QdrantClient(path=str(config['vectorstore_path']))
+sys.stderr.write("[MCP] Modello pronto.\n")
+sys.stderr.flush()
 
+# === Server MCP ===
+mcp = FastMCP("rag-search")
+
+# === Tool ===
 @mcp.tool()
-def search_knowledge_base(query: str, limit: int = 5) -> str:
-    """Cerca nei documenti indicizzati. Usa per domande su contenuti locali."""
+def search_knowledge_base(query: str, limit: int = 10) -> str:
+    """Cerca nei documenti indicizzati utile per rispondere a domande su contenuti locali."""
     try:
-        results = qdrant.search("documents", query_vector=model.encode(query).tolist(), limit=limit)
-        if not results:
-            return "Nessun risultato."
-        return "\n\n".join([f"[{r.payload.get('source','?')}] {r.payload.get('text','')}" for r in results])
+        vector = MODEL.encode(query).tolist()
+        results = QDRANT.query_points(
+            collection_name="documents",
+            query=vector,
+            limit=limit,
+            with_payload=True
+        )
+        
+        if not results.points:
+            return "Nessun risultato trovato."
+        
+        output = []
+        for r in results.points:
+            source = r.payload.get('source', '?')
+            text = r.payload.get('text', '').strip()
+            output.append(f"[{source}]\n{text}")
+        
+        return "\n\n---\n\n".join(output)
+        
     except Exception as e:
         return f"Errore: {e}"
 
+# === Entry point ===
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="stdio")
+
