@@ -7,14 +7,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-def setup_logging(log_level: str = "INFO") -> logging.Logger:
-    """Configura logging"""
+def setup_logging(config: dict) -> logging.Logger:
+    """Configura logging usando parametri da config"""
+    log_level = config.get('log_level', 'INFO')
+    log_file = config.get('log_file', 'rag_system.log')
+    
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler("rag_system.log")
+            logging.FileHandler(log_file)
         ]
     )
     return logging.getLogger(__name__)
@@ -53,29 +56,23 @@ def ensure_directory(path: str) -> Path:
     return dir_path
 
 
-def get_supported_file_extensions() -> set:
-    """Estensioni supportate (testo + PDF + audio + notebook + excel)"""
-    return {
-        # Testo puro
-        '.txt', '.md', '.csv', '.log',
-        # Markup
-        '.html', '.htm', '.xml',
-        # Codice
-        '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.css',
-        '.java', '.cpp', '.c', '.cs', '.go', '.rb', '.php',
-        '.sh', '.bash', '.sql',
-        # PDF
-        '.pdf',
-        # Audio (richiede FFmpeg)
-        '.mp3', '.m4a', '.wav', '.ogg', '.flac',
-        # Notebook
-        '.ipynb',
-        # Excel
-        '.xlsx'
-    }
+def get_supported_extensions(config: dict) -> set:
+    """Ottiene tutte le estensioni supportate da config"""
+    extensions = set()
+    ext_config = config.get('extensions', {})
+    for category in ext_config.values():
+        if isinstance(category, list):
+            extensions.update(category)
+    return extensions
 
 
-def is_supported_file(file_path: str) -> bool:
-    """Verifica se file è supportato"""
+def get_extensions_by_category(config: dict, category: str) -> set:
+    """Ottiene estensioni per categoria specifica"""
+    ext_config = config.get('extensions', {})
+    return set(ext_config.get(category, []))
+
+
+def is_supported_file(file_path: str, config: dict) -> bool:
+    """Verifica se file è supportato usando config"""
     ext = Path(file_path).suffix.lower()
-    return ext in get_supported_file_extensions()
+    return ext in get_supported_extensions(config)

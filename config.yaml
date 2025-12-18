@@ -1,25 +1,84 @@
-# RAG System - Configurazione
+# RAG System - Configurazione Centralizzata
 
-# Percorsi
+# ===== PERCORSI =====
 documents_path: "./data"
 vectorstore_path: "./qdrant_storage"
 
-# Chunking
+# ===== EMBEDDING MODEL =====
+embedding_model: "jinaai/jina-embeddings-v3"
+embedding_dimension: 1024
+embedding_task_passage: "retrieval.passage"
+embedding_task_query: "retrieval.query"
+trust_remote_code: true
+
+# ===== CHUNKING =====
 chunk_size: 1024
 chunk_overlap: 200
+min_text_length: 50
 
-# Ricerca
+# ===== QDRANT =====
+qdrant_collection: "documents"
+
+# ===== RICERCA =====
 top_k: 10
 similarity_threshold: 0.7
 
-# LLM (per chat.py)
+# ===== LLM (per chat.py) =====
 model: "gemini-3-pro-preview"
 temperature: 0.2
 max_tokens: 2048
 
-# Server MCP
+# ===== SERVER MCP =====
+mcp_server_name: "rag-search"
 mcp_port: 8080
 mcp_host: "127.0.0.1"
 
-# Logging
+# ===== AUDIO (WHISPER) =====
+whisper_model: "base"
+
+# ===== LOGGING =====
 log_level: "INFO"
+log_file: "rag_system.log"
+
+# ===== PROCESSING =====
+hash_buffer_size: 8192
+
+# ===== FILE EXTENSIONS =====
+extensions:
+  text:
+    - ".txt"
+    - ".md"
+    - ".py"
+    - ".js"
+    - ".ts"
+    - ".json"
+    - ".yaml"
+    - ".yml"
+    - ".xml"
+    - ".html"
+    - ".htm"
+    - ".css"
+    - ".csv"
+    - ".log"
+    - ".java"
+    - ".cpp"
+    - ".c"
+    - ".cs"
+    - ".go"
+    - ".rb"
+    - ".php"
+    - ".sh"
+    - ".bash"
+    - ".sql"
+  pdf:
+    - ".pdf"
+  audio:
+    - ".mp3"
+    - ".m4a"
+    - ".wav"
+    - ".ogg"
+    - ".flac"
+  notebook:
+    - ".ipynb"
+  excel:
+    - ".xlsx"

@@ -5,12 +5,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Estensioni speciali (richiedono estrazione)
-PDF_EXTENSIONS = {'.pdf'}
-AUDIO_EXTENSIONS = {'.mp3', '.m4a', '.wav', '.ogg', '.flac'}
-NOTEBOOK_EXTENSIONS = {'.ipynb'}
-EXCEL_EXTENSIONS = {'.xlsx'}
-
 
 def extract_pdf_text(file_path: Path) -> str:
     """Estrae testo da PDF usando PyMuPDF"""
@@ -59,25 +53,40 @@ def extract_excel_text(file_path: Path) -> str:
     return '\n'.join(texts).strip()
 
 
-def extract_text(file_path: Path) -> tuple[str, str | None]:
+def extract_text(file_path: Path, config: dict = None) -> tuple[str, str | None]:
     """Estrae testo da qualsiasi formato supportato.
     
     Args:
         file_path: Path del file da processare
+        config: Configurazione (opzionale, per whisper_model)
         
     Returns:
         (testo, errore) - se errore è None, l'estrazione è riuscita
     """
     ext = file_path.suffix.lower()
     
+    # Ottieni estensioni da config o usa default
+    if config:
+        pdf_ext = set(config.get('extensions', {}).get('pdf', ['.pdf']))
+        audio_ext = set(config.get('extensions', {}).get('audio', ['.mp3', '.m4a', '.wav', '.ogg', '.flac']))
+        notebook_ext = set(config.get('extensions', {}).get('notebook', ['.ipynb']))
+        excel_ext = set(config.get('extensions', {}).get('excel', ['.xlsx']))
+        whisper_model = config.get('whisper_model', 'base')
+    else:
+        pdf_ext = {'.pdf'}
+        audio_ext = {'.mp3', '.m4a', '.wav', '.ogg', '.flac'}
+        notebook_ext = {'.ipynb'}
+        excel_ext = {'.xlsx'}
+        whisper_model = 'base'
+    
     try:
-        if ext in PDF_EXTENSIONS:
+        if ext in pdf_ext:
             return extract_pdf_text(file_path), None
-        elif ext in AUDIO_EXTENSIONS:
-            return extract_audio_text(file_path), None
-        elif ext in NOTEBOOK_EXTENSIONS:
+        elif ext in audio_ext:
+            return extract_audio_text(file_path, whisper_model), None
+        elif ext in notebook_ext:
             return extract_notebook_text(file_path), None
-        elif ext in EXCEL_EXTENSIONS:
+        elif ext in excel_ext:
             return extract_excel_text(file_path), None
         else:
             # File di testo normale
@@ -87,4 +96,3 @@ def extract_text(file_path: Path) -> tuple[str, str | None]:
     except Exception as e:
         logger.error(f"Errore estrazione {file_path}: {e}")
         return "", str(e)
-

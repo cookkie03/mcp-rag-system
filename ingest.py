@@ -14,14 +14,10 @@ from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue
 
-from utils import load_config, load_environment, ensure_directory, is_supported_file
-from extractors import extract_text, PDF_EXTENSIONS, AUDIO_EXTENSIONS, NOTEBOOK_EXTENSIONS, EXCEL_EXTENSIONS
+from utils import load_config, load_environment, ensure_directory, get_supported_extensions
+from extractors import extract_text
 
 console = Console()
-
-# Estensioni supportate
-TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.xml', '.html', '.css', '.csv'}
-ALL_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSIONS | AUDIO_EXTENSIONS | NOTEBOOK_EXTENSIONS | EXCEL_EXTENSIONS
 
 
 class Ingester:
@@ -31,12 +27,21 @@ class Ingester:
         self.store_path = ensure_directory(config['vectorstore_path'])
         self.stats = {'processed': 0, 'chunks': 0, 'deleted': 0, 'skipped': 0, 'errors': []}
 
+        # Parametri da config
+        self.collection_name = config.get('qdrant_collection', 'documents')
+        self.min_text_length = config.get('min_text_length', 50)
+        self.hash_buffer_size = config.get('hash_buffer_size', 8192)
+        self.all_extensions = get_supported_extensions(config)
+
         console.print("[yellow]Caricamento modello embedding...[/yellow]")
-        self.model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+        model_kwargs = {"trust_remote_code": config.get('trust_remote_code', False)}
+        self.model = SentenceTransformer(config['embedding_model'], **model_kwargs)
+        self.embedding_dim = config.get('embedding_dimension', 768)
+        self.embedding_task = config.get('embedding_task_passage', None)
         
         self.qdrant = QdrantClient(path=str(self.store_path))
-        if "documents" not in [c.name for c in self.qdrant.get_collections().collections]:
-            self.qdrant.create_collection("documents", VectorParams(size=768, distance=Distance.COSINE))
+        if self.collection_name not in [c.name for c in self.qdrant.get_collections().collections]:
+            self.qdrant.create_collection(self.collection_name, VectorParams(size=self.embedding_dim, distance=Distance.COSINE))
 
         self.registry_file = Path(self.store_path) / ".registry.json"
         self.registry = json.loads(self.registry_file.read_text()) if self.registry_file.exists() else {}
@@ -45,19 +50,22 @@ class Ingester:
         """Calcola hash MD5 del file"""
         h = hashlib.md5()
         with open(path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b""):
+            for chunk in iter(lambda: f.read(self.hash_buffer_size), b""):
                 h.update(chunk)
         return h.hexdigest()
 
     def _delete_vectors(self, filename):
         """Elimina vettori di un file dal database"""
         try:
-            self.qdrant.delete("documents", Filter(must=[FieldCondition(key="source", match=MatchValue(value=filename))]))
+            self.qdrant.delete(self.collection_name, Filter(must=[FieldCondition(key="source", match=MatchValue(value=filename))]))
         except: 
             pass
 
-    def _chunk_text(self, text, size=1000, overlap=200):
+    def _chunk_text(self, text, size=None, overlap=None):
         """Divide il testo in chunks con overlap"""
+        size = size or self.config.get('chunk_size', 1024)
+        overlap = overlap or self.config.get('chunk_overlap', 200)
+        
         chunks = []
         start = 0
         while start < len(text):
@@ -71,34 +79,35 @@ class Ingester:
     def _ingest(self, path):
         """Processa un singolo file"""
         # Verifica formato supportato
-        if path.suffix.lower() not in ALL_EXTENSIONS:
+        if path.suffix.lower() not in self.all_extensions:
             return 0, f"Formato non supportato: {path.suffix}"
         
         # Elimina vecchi vettori
         self._delete_vectors(path.name)
         
         # Estrai testo (gestisce PDF, audio e testo normale)
-        text, err = extract_text(path)
+        text, err = extract_text(path, self.config)
         if err:
             return 0, f"Errore estrazione: {err}"
         
-        if not text or len(text) < 50:
+        if not text or len(text) < self.min_text_length:
             return 0, "File troppo corto"
         
         # Chunking
-        chunks = self._chunk_text(text, self.config['chunk_size'], self.config['chunk_overlap'])
+        chunks = self._chunk_text(text)
         if not chunks:
             return 0, "Nessun chunk generato"
         
         # Embedding
         try:
-            # encode() con convert_to_numpy=False restituisce tensor, usiamo convert_to_tensor=False
-            raw_embeddings = self.model.encode(chunks, show_progress_bar=False)
+            encode_kwargs = {"show_progress_bar": False}
+            if self.embedding_task:
+                encode_kwargs["task"] = self.embedding_task
+            raw_embeddings = self.model.encode(chunks, **encode_kwargs)
             
             # Converti in liste Python pure (niente numpy)
             vectors = []
             for emb in raw_embeddings:
-                # Ogni emb potrebbe essere numpy.ndarray o list
                 if hasattr(emb, 'tolist'):
                     vectors.append(emb.tolist())
                 else:
@@ -113,7 +122,7 @@ class Ingester:
         # Crea punti
         points = []
         for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            if len(vector) != 768:
+            if len(vector) != self.embedding_dim:
                 continue  # Skip vettori malformati
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
@@ -126,7 +135,7 @@ class Ingester:
         
         # Upsert
         try:
-            self.qdrant.upsert("documents", points)
+            self.qdrant.upsert(self.collection_name, points)
         except Exception as e:
             return 0, f"Errore upsert: {e}"
         
@@ -137,17 +146,17 @@ class Ingester:
         
         if clean:
             try: 
-                self.qdrant.delete_collection("documents")
+                self.qdrant.delete_collection(self.collection_name)
             except: 
                 pass
-            self.qdrant.create_collection("documents", VectorParams(size=768, distance=Distance.COSINE))
+            self.qdrant.create_collection(self.collection_name, VectorParams(size=self.embedding_dim, distance=Distance.COSINE))
             self.registry = {}
             console.print("[yellow]Storage pulito[/yellow]")
 
         # Scan files
         files = {}
         for p in Path(self.docs_path).rglob("*"):
-            if p.is_file() and p.suffix.lower() in ALL_EXTENSIONS:
+            if p.is_file() and p.suffix.lower() in self.all_extensions:
                 key = str(p.relative_to(self.docs_path))
                 files[key] = p
         
@@ -197,8 +206,10 @@ class Ingester:
         self.registry_file.write_text(json.dumps(self.registry))
         
         elapsed = int(time.time() - start)
+        h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+        tempo_str = f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
         console.print(Panel(
-            f"Processati: {self.stats['processed']} | Chunks: {self.stats['chunks']} | Skipped: {self.stats['skipped']} | Tempo: {elapsed}s",
+            f"Processati: {self.stats['processed']} | Chunks: {self.stats['chunks']} | Skipped: {self.stats['skipped']} | Tempo: {tempo_str}",
             title="Completato", border_style="green"
         ))
         
