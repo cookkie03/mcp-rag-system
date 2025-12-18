@@ -1,176 +1,128 @@
 # RAG System
 
-Sistema RAG (Retrieval-Augmented Generation) semplice e potente. Ingestione documenti, chatbot e server MCP in poche righe.
+Sistema RAG (Retrieval-Augmented Generation) production-ready con **embedding locale** e **LLM cloud**.
+
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+## ✨ Features
+
+- **📦 Embedding Locale**: Usa `all-mpnet-base-v2` (state-of-the-art) senza API esterne
+- **🔄 Ingestione Incrementale**: Aggiunge, aggiorna ed elimina automaticamente i documenti
+- **💬 Chat RAG**: Risposte contestuali tramite Google Gemini
+- **🔌 MCP Server**: Compatibile con Claude Desktop, VS Code, Cursor e altri client MCP
+- **🚀 Zero Rate Limits**: Nessun limite API per l'indicizzazione
 
 ## Requisiti
 
 - Python 3.10+
-- Google API Key ([ottienila qui](https://aistudio.google.com/apikey))
+- Google API Key ([ottienila qui](https://aistudio.google.com/apikey)) - Solo per la Chat
 
-## Setup
+## ⚡ Quick Start
 
 ```bash
-# 1. Crea ambiente virtuale
-python -m venv .venv
+# 1. Clona e entra nella directory
+git clone <repo-url>
+cd file-search
 
-# 2. Attiva ambiente
-# Windows:
-.venv\Scripts\activate
-# Linux/Mac:
-source .venv/bin/activate
+# 2. Crea e attiva ambiente virtuale
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux/Mac
 
 # 3. Installa dipendenze
 pip install -r requirements.txt
 
 # 4. Configura API key
-# Copia .env.example in .env e aggiungi la tua chiave
-copy .env.example .env   # Windows
-cp .env.example .env     # Linux/Mac
+copy .env.example .env
+# Modifica .env con la tua GOOGLE_API_KEY
+
+# 5. Aggiungi documenti e indicizza
+# Copia i tuoi file in data/, poi:
+python ingest.py
 ```
 
-Modifica `.env`:
+> **Nota**: Il primo avvio scarica il modello embedding (~420MB). Una tantum.
 
-```
-GOOGLE_API_KEY=la_tua_chiave_qui
-# Opzionale: Fallback per limiti API Google
-HUGGING_FACE_TOKEN=la_tua_token_hf_qui
+## 📖 Utilizzo
 
-```
-
-## Utilizzo
-
-### 1. Ingestione Documenti
-
-Copia i tuoi documenti nella cartella `data/`, poi:
+### Ingestione Documenti
 
 ```bash
-python ingest.py           # Ingestione incrementale (solo nuovi/modificati)
-python ingest.py --clean   # Pulisce tutto e re-ingestisce da zero
+python ingest.py           # Incrementale (aggiunge nuovi, aggiorna modificati, rimuove eliminati)
+python ingest.py --clean   # Ricostruzione completa da zero
 ```
 
-**Ingestione Incrementale**: Lo script tiene traccia dei file già processati:
-
-- **File nuovi** → Vengono processati e aggiunti
-- **File invariati** → Vengono saltati automaticamente
-- **File modificati** → I vecchi chunk vengono eliminati e sostituiti con i nuovi
-
-**Quando usare `--clean`**: Solo se vuoi ripartire da zero (es. cambio modello embedding).
-
-### 2. Chatbot Interattivo
+### Chatbot Interattivo
 
 ```bash
 python chat.py
 ```
 
-Comandi disponibili:
+Comandi: `/help`, `/stats`, `/exit`
 
-- `/help` - Mostra aiuto
-- `/stats` - Statistiche database
-- `/exit` - Esci
-
-### 3. Server MCP (per ChatGPT/Claude)
+### Server MCP
 
 ```bash
 python mcp_server.py
 ```
 
-Server disponibile su `http://127.0.0.1:8080`
+Funziona in modalità **stdio** (per Claude Desktop, Cursor, VS Code) o come server standalone.
 
-**Endpoints:**
-| Metodo | Endpoint | Descrizione |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/stats` | Statistiche database |
-| POST | `/search` | Ricerca documenti |
-| GET | `/tools` | Tool disponibili |
-
-**Esempio ricerca:**
-
-```bash
-curl -X POST http://127.0.0.1:8080/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "la tua domanda", "top_k": 5}'
-```
-
-## Configurazione MCP per ChatGPT
-
-Aggiungi al tuo client MCP:
+**Configurazione Claude Desktop** (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "rag-system": {
-      "url": "http://127.0.0.1:8080",
-      "tools": ["search_documents"]
+    "rag-search": {
+      "command": "python",
+      "args": ["c:/path/to/file-search/mcp_server.py"],
+      "cwd": "c:/path/to/file-search"
     }
   }
 }
 ```
 
-## Formati Supportati (60+)
+## ⚙️ Configurazione
 
-| Categoria       | Formati                                                 |
-| --------------- | ------------------------------------------------------- |
-| **Office**      | PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, ODT, ODP, ODS     |
-| **Web**         | HTML, HTM, MHTML, XML, MD, RST, TEX                     |
-| **Codice**      | PY, IPYNB, JS, TS, JSON, YAML, JAVA, CPP, GO, e altri   |
-| **Audio**       | MP3, WAV, M4A, FLAC, OGG, AAC (trascrizione automatica) |
-| **Immagini**    | PNG, JPG, GIF, BMP, TIFF, WEBP, SVG (OCR automatico)    |
-| **Sottotitoli** | VTT, SRT, ASS, SSA                                      |
-| **Archivi**     | ZIP, TAR, GZ, RAR, 7Z (estrazione automatica)           |
-
-## Configurazione
-
-Modifica `config.yaml` per personalizzare:
+Modifica `config.yaml`:
 
 ```yaml
-# Percorsi
-documents_path: "./data" # Cartella documenti
+documents_path: "./data" # Cartella documenti sorgente
 vectorstore_path: "./qdrant_storage" # Database vettoriale
-
-# Elaborazione
 chunk_size: 1024 # Dimensione chunk
-chunk_overlap: 200 # Sovrapposizione chunk
-
-# Ricerca
-top_k: 5 # Risultati per query
-similarity_threshold: 0.7 # Soglia similarita (0-1)
-
-# LLM
-model: "gemini-2.0-flash-exp" # Modello Gemini
-temperature: 0.7 # Creativita (0-1)
-
-# Server
-mcp_port: 8080 # Porta server
-mcp_host: "127.0.0.1" # Host server
+chunk_overlap: 200 # Sovrapposizione
+top_k: 10 # Risultati per query
+model: "gemini-3-pro-preview" # Modello LLM
+temperature: 0.7
+max_tokens: 4096
 ```
 
-## Struttura Progetto
+## 📁 Struttura Progetto
 
-```
-rag-system/
-├── data/               # Metti i documenti qui
-├── qdrant_storage/     # Database vettoriale (auto-generato)
-│   ├── collection/     # Dati Qdrant
-│   ├── .ingested_files.json  # Registry file processati
-│   └── ingestion_errors.log  # Log errori (se presenti)
-├── ingest.py           # Script ingestione
-├── chat.py             # Chatbot interattivo
-├── mcp_server.py       # Server MCP
-├── utils.py            # Funzioni condivise
-├── config.yaml         # Configurazione
-├── .env                # API key (da creare)
-├── .env.example        # Template API key
-└── requirements.txt    # Dipendenze
+```text
+file-search/
+├── data/                 # Documenti da indicizzare
+├── qdrant_storage/       # Database vettoriale (auto-generato)
+├── ingest.py             # Script ingestione
+├── chat.py               # Chatbot interattivo
+├── mcp_server.py         # Server MCP
+├── utils.py              # Funzioni comuni
+├── config.yaml           # Configurazione
+├── requirements.txt      # Dipendenze Python
+├── .env.example          # Template variabili ambiente
+└── README.md
 ```
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
-| Problema                     | Soluzione                                |
-| ---------------------------- | ---------------------------------------- |
-| `GOOGLE_API_KEY non trovata` | Crea `.env` con `GOOGLE_API_KEY=...`     |
-| `Nessun documento trovato`   | Copia file nella cartella `data/`        |
-| `Porta 8080 in uso`          | Cambia `mcp_port` in `config.yaml`       |
-| `ModuleNotFoundError`        | Esegui `pip install -r requirements.txt` |
-| `Errore embedding`           | Verifica che la API key sia valida       |
-| `Rate Limit (429)`           | Aggiungi `HUGGING_FACE_TOKEN` nel `.env` |
+| Problema                     | Soluzione                                    |
+| ---------------------------- | -------------------------------------------- |
+| `GOOGLE_API_KEY non trovata` | Crea `.env` con `GOOGLE_API_KEY=...`         |
+| `Nessun documento trovato`   | Aggiungi file nella cartella `data/`         |
+| `ModuleNotFoundError`        | Esegui `pip install -r requirements.txt`     |
+| Primo avvio lento            | Normale: sta scaricando il modello embedding |
+
+## 📄 License
+
+MIT
