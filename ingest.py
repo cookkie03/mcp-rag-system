@@ -1,4 +1,4 @@
-"""Document ingestion - Ingestione documenti"""
+"""Document Ingestion - Nuovo SDK google-genai + qdrant_client"""
 
 import os
 import sys
@@ -8,19 +8,21 @@ import json
 import hashlib
 from pathlib import Path
 from datetime import datetime
+
 from rich.console import Console
 from rich.progress import Progress
 from rich.table import Table
 from rich.panel import Panel
 
+# Nuovo SDK Google GenAI
+from google import genai
+
 from utils import load_config, load_environment, get_api_key, ensure_directory, is_supported_file
 
 try:
-    from datapizza.modules.splitters import TextSplitter
-    from datapizza.embedders import ClientEmbedder
-    from datapizza.clients.google import GoogleClient
+    from datapizza.modules.splitters import TextSplitter  
     from qdrant_client import QdrantClient
-    from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue
+    from qdrant_client.models import PointStruct, VectorParams, Distance
 except ImportError as e:
     raise ImportError(f"Installa dipendenze: pip install -r requirements.txt\nErrore: {e}")
 
@@ -28,355 +30,255 @@ console = Console()
 
 
 class Ingester:
-    """Ingestione documenti semplificata"""
-
     def __init__(self, config):
         self.config = config
         self.docs_path = ensure_directory(config['documents_path'])
         self.store_path = ensure_directory(config['vectorstore_path'])
+        self.collection_name = "documents"
+        self.embedding_dim = config.get('embedding_dimensions', 768)
+        self.stats = {'processed': 0, 'failed': 0, 'chunks': 0, 'skipped': 0, 'updated': 0, 'errors': []}
 
+        # Nuovo client Google GenAI
         api_key = get_api_key("GOOGLE_API_KEY")
+        self.genai_client = genai.Client(api_key=api_key)
 
-        # Client Google per embedding
-        self.google_client = GoogleClient(
-            api_key=api_key,
-            model=config['embedding_model']
-        )
-        self.embedder = ClientEmbedder(client=self.google_client)
-
-        # Vector store (Qdrant locale su disco)
-        self.qdrant_client = QdrantClient(path=str(self.store_path))
-
-        # Splitter
+        # Splitter datapizza
         self.splitter = TextSplitter(
             max_char=config['chunk_size'],
             overlap=config['chunk_overlap']
         )
 
-        self.collection_name = "documents"
-        self.embedding_dim = config.get('embedding_dimensions', 768)
-        self.stats = {'processed': 0, 'failed': 0, 'chunks': 0, 'skipped': 0, 'updated': 0, 'errors': []}
+        # Qdrant diretto
+        self.qdrant = QdrantClient(path=str(self.store_path))
+        self._ensure_collection()
 
-        # File registry per tracking
+        # Registry
         self.tracking_file = Path(self.store_path) / ".ingested_files.json"
         self.registry = self._load_registry()
 
-        # Crea collection se non esiste
-        self._ensure_collection()
-
-    def _load_registry(self):
-        """Carica il registry dei file già processati"""
-        if self.tracking_file.exists():
-            try:
-                with open(self.tracking_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return {}
-        return {}
-
-    def _save_registry(self):
-        """Salva il registry dei file processati"""
-        try:
-            with open(self.tracking_file, 'w', encoding='utf-8') as f:
-                json.dump(self.registry, f, indent=2, ensure_ascii=False)
-        except IOError as e:
-            console.print(f"[yellow]Attenzione: impossibile salvare registry: {e}[/yellow]")
-
-    def _compute_file_hash(self, file_path):
-        """Calcola hash MD5 del contenuto del file"""
-        hash_md5 = hashlib.md5()
-        try:
-            with open(file_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
-        except IOError:
-            return None
-
-    def _get_file_key(self, file_path):
-        """Genera chiave univoca per il file (path relativo alla cartella data)"""
-        try:
-            return str(file_path.relative_to(self.docs_path))
-        except ValueError:
-            return str(file_path)
-
-    def _register_file(self, file_path, file_hash):
-        """Registra un file come processato con successo"""
-        key = self._get_file_key(file_path)
-        self.registry[key] = {
-            'hash': file_hash,
-            'mtime': file_path.stat().st_mtime,
-            'ingested_at': datetime.now().isoformat(),
-            'full_path': str(file_path)
-        }
-
-    def _check_file_status(self, file_path):
-        """
-        Controlla lo stato di un file.
-        Ritorna: (status, hash) dove status è 'new', 'unchanged', 'modified'
-        """
-        key = self._get_file_key(file_path)
-        current_hash = self._compute_file_hash(file_path)
-        
-        if key not in self.registry:
-            return 'new', current_hash
-        
-        stored_hash = self.registry[key].get('hash')
-        
-        if current_hash == stored_hash:
-            return 'unchanged', current_hash
-        else:
-            return 'modified', current_hash
-
-    def _delete_file_chunks(self, file_path):
-        """
-        Elimina tutti i chunk associati a un file specifico da Qdrant.
-        Usa il campo 'source' nel payload per identificare i chunk.
-        """
-        try:
-            self.qdrant_client.delete(
-                collection_name=self.collection_name,
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="source",
-                            match=MatchValue(value=file_path.name)
-                        )
-                    ]
-                )
-            )
-            return True
-        except Exception as e:
-            console.print(f"[yellow]Attenzione: impossibile eliminare vecchi chunk di {file_path.name}: {e}[/yellow]")
-            return False
-
     def _ensure_collection(self):
-        """Assicura che la collection esista"""
-        collections = self.qdrant_client.get_collections().collections
-        if not any(c.name == self.collection_name for c in collections):
-            self.qdrant_client.create_collection(
+        collections = [c.name for c in self.qdrant.get_collections().collections]
+        if self.collection_name not in collections:
+            self.qdrant.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=self.embedding_dim, distance=Distance.COSINE)
             )
 
-    def clean(self):
-        """Pulisce il database, registry e log errori prima di re-ingestire"""
+    def _load_registry(self):
+        if self.tracking_file.exists():
+            try:
+                return json.loads(self.tracking_file.read_text(encoding='utf-8'))
+            except:
+                return {}
+        return {}
+
+    def _save_registry(self):
         try:
-            self.qdrant_client.delete_collection(self.collection_name)
-            self._ensure_collection()
-            # Reset anche il registry
-            self.registry = {}
-            self._save_registry()
-            # Elimina anche il log degli errori
-            error_log = Path(self.store_path) / "ingestion_errors.log"
-            if error_log.exists():
-                error_log.unlink()
-            console.print(Panel("[yellow]Database, registry e log errori puliti[/yellow]", title="Clean"))
-            return True
-        except Exception:
-            return True
+            self.tracking_file.write_text(json.dumps(self.registry, indent=2, ensure_ascii=False), encoding='utf-8')
+        except:
+            pass
+
+    def _compute_file_hash(self, file_path):
+        h = hashlib.md5()
+        try:
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except:
+            return None
+
+    def _get_file_key(self, file_path):
+        try:
+            return str(file_path.relative_to(self.docs_path))
+        except:
+            return str(file_path)
+
+    def _register_file(self, file_path, file_hash):
+        self.registry[self._get_file_key(file_path)] = {
+            'hash': file_hash,
+            'mtime': file_path.stat().st_mtime,
+            'ingested_at': datetime.now().isoformat()
+        }
+
+    def _check_file_status(self, file_path):
+        key = self._get_file_key(file_path)
+        h = self._compute_file_hash(file_path)
+        if key not in self.registry:
+            return 'new', h
+        if self.registry[key].get('hash') == h:
+            return 'unchanged', h
+        return 'modified', h
+
+    def clean(self):
+        try:
+            self.qdrant.delete_collection(self.collection_name)
+        except:
+            pass
+        self._ensure_collection()
+        self.registry = {}
+        self._save_registry()
+        console.print(Panel("[yellow]Database pulito[/yellow]", title="Clean"))
 
     def get_files(self):
-        """Trova file supportati"""
         files = []
-        for root, dirs, filenames in os.walk(self.docs_path):
-            for filename in filenames:
-                file_path = Path(root) / filename
-                if is_supported_file(str(file_path)):
-                    files.append(file_path)
+        for root, _, names in os.walk(self.docs_path):
+            for name in names:
+                p = Path(root) / name
+                if is_supported_file(str(p)):
+                    files.append(p)
         return sorted(files)
 
-    def embed_with_retry(self, text, max_retries=3):
-        """Embed con retry automatico per errori di rete"""
-        for attempt in range(max_retries):
+    def embed(self, text, retries=5):
+        """Embed singolo testo"""
+        return self.embed_batch([text])[0]
+
+    def embed_batch(self, texts, retries=5):
+        """Embed batch di testi (max 250) con rate limiting intelligente"""
+        import re
+        
+        for attempt in range(retries):
             try:
-                return self.embedder.embed(text)
+                response = self.genai_client.models.embed_content(
+                    model='gemini-embedding-001',
+                    contents=texts  # Lista di testi
+                )
+                # Converti tutti gli embedding a liste Python pure
+                return [[float(x) for x in emb.values] for emb in response.embeddings]
             except Exception as e:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** (attempt + 1)  # 2, 4, 8 secondi
+                error_str = str(e)
+                if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+                    match = re.search(r'retryDelay.*?(\d+)', error_str)
+                    wait_time = int(match.group(1)) + 5 if match else 65
+                    console.print(f"[yellow]Rate limit, attendo {wait_time}s...[/yellow]")
                     time.sleep(wait_time)
-                else:
+                elif attempt == retries - 1:
                     raise e
+                else:
+                    time.sleep(2 ** (attempt + 1))
 
     def ingest_file(self, file_path):
-        """Ingestisci un file"""
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-
+            content = file_path.read_text(encoding='utf-8', errors='ignore')
             if not content.strip():
-                return True, f"{file_path.name} (vuoto, saltato)"
+                return True, f"{file_path.name} (vuoto)"
 
-            text_chunks = self.splitter.split(content)
+            # Split con datapizza (restituisce Chunk objects)
+            chunk_objects = self.splitter.split(content)
+            if not chunk_objects:
+                return True, f"{file_path.name} (no chunks)"
+
+            # Estrai testo dai Chunk
+            texts = [c.text if hasattr(c, 'text') else str(c) for c in chunk_objects]
+
+            # Dividi chunk lunghi (nessuna perdita dati)
+            MAX = 6000
+            chunks = []
+            for t in texts:
+                if len(t) > MAX:
+                    for i in range(0, len(t), MAX):
+                        s = t[i:i+MAX].strip()
+                        if s:
+                            chunks.append(s)
+                elif t.strip():
+                    chunks.append(t)
+
+            if not chunks:
+                return True, f"{file_path.name} (empty after split)"
+
+            # Embed in BATCH (max 100 per batch per sicurezza, limite è 250)
+            # Con ~10 req/min, aspettiamo 7s tra batch
+            BATCH_SIZE = 100
+            all_vectors = []
+            
+            for batch_start in range(0, len(chunks), BATCH_SIZE):
+                batch_texts = chunks[batch_start:batch_start + BATCH_SIZE]
+                batch_vectors = self.embed_batch(batch_texts)
+                all_vectors.extend(batch_vectors)
+                
+                # Rate limiting: 7s tra batch per stare sotto 10 req/min
+                if batch_start + BATCH_SIZE < len(chunks):
+                    console.print(f"[dim]Batch {batch_start//BATCH_SIZE + 1} completato, attendo 7s...[/dim]")
+                    time.sleep(7)
+
+            # Crea punti Qdrant
             points = []
-
-            for i, text in enumerate(text_chunks):
-                embedding_vector = self.embed_with_retry(text)
-
-                # Handle nested list from datapizza (may return [[...]] or [...])
-                # Flatten if needed
-                if embedding_vector and isinstance(embedding_vector[0], (list, tuple)):
-                    embedding_vector = embedding_vector[0]
-                
-                # Convert to list of native Python floats
-                if hasattr(embedding_vector, 'tolist'):
-                    embedding_vector = embedding_vector.tolist()
-                embedding_vector = [float(x) for x in embedding_vector]
-                
-                point = PointStruct(
+            for i, (text, vec) in enumerate(zip(chunks, all_vectors)):
+                points.append(PointStruct(
                     id=str(uuid.uuid4()),
-                    vector=embedding_vector,
-                    payload={
-                        'text': text,
-                        'source': file_path.name,
-                        'chunk_id': str(i),
-                        'path': str(file_path)
-                    }
-                )
-                points.append(point)
+                    vector=vec,
+                    payload={'text': text, 'source': file_path.name, 'chunk_id': str(i), 'path': str(file_path)}
+                ))
 
-            # Batch upsert
             if points:
-                self.qdrant_client.upsert(
-                    collection_name=self.collection_name,
-                    points=points
-                )
+                self.qdrant.upsert(collection_name=self.collection_name, points=points)
 
             self.stats['processed'] += 1
-            self.stats['chunks'] += len(text_chunks)
-            return True, f"{file_path.name} ({len(text_chunks)} chunks)"
+            self.stats['chunks'] += len(points)
+            return True, f"{file_path.name} ({len(points)} chunks)"
 
         except Exception as e:
             self.stats['failed'] += 1
-            error_msg = f"{file_path.name}: {str(e)}"
-            self.stats['errors'].append(error_msg)
-            return False, error_msg
+            self.stats['errors'].append(f"{file_path.name}: {e}")
+            return False, f"{file_path.name}: {e}"
 
     def run(self, clean=False):
-        """Esegui ingestione con supporto incrementale"""
-        start_time = time.time()  # Tempo di inizio (float)
-        
+        start = time.time()
         if clean:
             self.clean()
 
         files = self.get_files()
-
         if not files:
-            console.print(Panel("[yellow]Nessun documento trovato in ./data/[/yellow]", title="Info"))
+            console.print(Panel("[yellow]Nessun documento[/yellow]", title="Info"))
             return
 
-        # Classifica i file e salva gli hash
-        new_files = []
-        modified_files = []
-        unchanged_files = []
-        file_info = {}  # Dizionario per salvare hash pre-calcolati
-        
-        for file_path in files:
-            status, file_hash = self._check_file_status(file_path)
-            file_info[file_path] = {'hash': file_hash, 'status': status}
-            if status == 'new':
-                new_files.append(file_path)
-            elif status == 'modified':
-                modified_files.append(file_path)
-            else:
-                unchanged_files.append(file_path)
+        new, mod, unch = [], [], []
+        info = {}
+        for f in files:
+            s, h = self._check_file_status(f)
+            info[f] = {'hash': h}
+            (new if s == 'new' else mod if s == 'modified' else unch).append(f)
 
-        # Report classificazione
-        console.print(Panel(
-            f"[cyan]Trovati {len(files)} documenti[/cyan]\n"
-            f"  [green]• Nuovi: {len(new_files)}[/green]\n"
-            f"  [yellow]• Modificati: {len(modified_files)}[/yellow]\n"
-            f"  [dim]• Invariati (saltati): {len(unchanged_files)}[/dim]",
-            title="Analisi File"
-        ))
+        console.print(Panel(f"[cyan]{len(files)} file[/cyan]\n  Nuovi: {len(new)}\n  Mod: {len(mod)}\n  Inv: {len(unch)}", title="Analisi"))
 
-        # File da processare (nuovi + modificati)
-        files_to_process = new_files + modified_files
-        
-        if not files_to_process:
-            console.print(Panel("[green]Nessun file nuovo o modificato da processare[/green]", title="Info"))
+        to_do = new + mod
+        if not to_do:
+            console.print(Panel("[green]Nulla da fare[/green]"))
             return
 
-        self.stats['skipped'] = len(unchanged_files)
+        self.stats['skipped'] = len(unch)
 
-        with Progress() as progress:
-            task = progress.add_task("[cyan]Elaborazione...", total=len(files_to_process))
-            for file_path in files_to_process:
-                is_modified = file_path in modified_files
-                file_hash = file_info[file_path]['hash']
-                
-                # Se il file è stato modificato, elimina prima i vecchi chunk
-                if is_modified:
-                    self._delete_file_chunks(file_path)
-                
-                # Processa il file
-                success, msg = self.ingest_file(file_path)
-                
-                if success:
-                    # Registra solo se processato con successo
-                    self._register_file(file_path, file_hash)
-                    if is_modified:
+        with Progress() as prog:
+            task = prog.add_task("[cyan]...", total=len(to_do))
+            for f in to_do:
+                ok, msg = self.ingest_file(f)
+                if ok:
+                    self._register_file(f, info[f]['hash'])
+                    if f in mod:
                         self.stats['updated'] += 1
-                        status_icon = "[yellow]UPD[/yellow]"
-                    else:
-                        status_icon = "[green]NEW[/green]"
-                else:
-                    status_icon = "[red]ERR[/red]"
-                
-                progress.update(task, advance=1, description=f"{status_icon} {msg}")
+                prog.update(task, advance=1, description=f"{'[green]OK' if ok else '[red]ERR'}[/] {f.name}")
 
-        # Salva registry alla fine
         self._save_registry()
 
-        # Statistiche a schermo
-        table = Table(title="Risultati", show_header=True)
-        table.add_column("Metrica", style="cyan")
-        table.add_column("Valore", style="green")
-        table.add_row("Nuovi processati", str(self.stats['processed'] - self.stats['updated']))
-        table.add_row("Aggiornati", str(self.stats['updated']))
-        table.add_row("Saltati (invariati)", str(self.stats['skipped']))
-        table.add_row("Falliti", str(self.stats['failed']))
-        table.add_row("Chunk totali", str(self.stats['chunks']))
-        console.print(table)
+        t = Table(title="Risultati")
+        t.add_column("Metrica", style="cyan")
+        t.add_column("Valore", style="green")
+        t.add_row("Nuovi", str(self.stats['processed'] - self.stats['updated']))
+        t.add_row("Aggiornati", str(self.stats['updated']))
+        t.add_row("Saltati", str(self.stats['skipped']))
+        t.add_row("Falliti", str(self.stats['failed']))
+        t.add_row("Chunks", str(self.stats['chunks']))
+        console.print(t)
 
-        # Scrittura Log Errori su File (in qdrant_storage)
         if self.stats['errors']:
-            log_file = Path(self.store_path) / "ingestion_errors.log"
-            try:
-                with open(log_file, "w", encoding="utf-8") as f:
-                    f.write(f"=== Report Errori Ingestione - {datetime.now()} ===\n\n")
-                    f.write(f"Totale File Falliti: {self.stats['failed']}\n")
-                    f.write("-" * 50 + "\n\n")
-                    for error in self.stats['errors']:
-                        f.write(f"{error}\n")
-                        f.write("-" * 30 + "\n")
-                
-                console.print(f"\n[red]Rilevati {len(self.stats['errors'])} errori. Dettagli salvati in: {log_file}[/red]")
-            except Exception as e:
-                console.print(f"[red]Impossibile scrivere file di log: {e}[/red]")
+            console.print(f"\n[bold red]═══ {len(self.stats['errors'])} ERRORI ═══[/bold red]")
+            for err in self.stats['errors']:
+                console.print(f"[red]  • {err}[/red]")
 
-        # Calcola durata totale
-        elapsed = int(time.time() - start_time)
-        hours, remainder = divmod(elapsed, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        
-        if hours > 0:
-            duration_str = f"{hours} ore {minutes} min {seconds} sec"
-        elif minutes > 0:
-            duration_str = f"{minutes} min {seconds} sec"
-        else:
-            duration_str = f"{seconds} sec"
-        
-        console.print(Panel(f"[green]Completato in {duration_str}[/green]", title="Status"))
+        e = int(time.time() - start)
+        console.print(Panel(f"[green]{e//3600}h {(e%3600)//60}m {e%60}s[/green]", title="Tempo"))
 
 
 if __name__ == "__main__":
     load_environment()
-    config = load_config("config.yaml")
-
-    # Check --clean flag
-    clean = "--clean" in sys.argv
-
-    ingester = Ingester(config)
-    ingester.run(clean=clean)
-
+    Ingester(load_config("config.yaml")).run(clean="--clean" in sys.argv)
