@@ -7,20 +7,21 @@ Sistema RAG (Retrieval-Augmented Generation) production-ready con **embedding lo
 
 ## ✨ Features
 
-- **📦 Embedding Locale**: Usa `all-mpnet-base-v2` (state-of-the-art) senza API esterne
+- **🧠 Jina Embeddings v3**: Modello multilingue state-of-the-art (1024 dimensioni)
 - **🔄 Ingestione Incrementale**: Aggiunge, aggiorna ed elimina automaticamente i documenti
 - **💬 Chat RAG**: Risposte contestuali tramite Google Gemini
-- **🔌 MCP Server**: Compatibile con Claude Desktop, VS Code, Cursor e altri client MCP
+- **🔌 MCP Server**: Compatibile con Antigravity, Claude Desktop, VS Code, Cursor
+- **⚙️ Configurazione Centralizzata**: Un solo file `config.yaml` per tutti i parametri
 - **🚀 Zero Rate Limits**: Nessun limite API per l'indicizzazione
 
 ## 📄 Formati Supportati
 
-| Categoria     | Estensioni                                                             |
-| ------------- | ---------------------------------------------------------------------- |
-| **Testo**     | `.txt`, `.md`, `.csv`, `.log`                                          |
-| **Codice**    | `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.yml`, `.xml`, `.html`, `.css` |
-| **Documenti** | `.pdf`, `.xlsx`, `.ipynb`                                              |
-| **Audio**     | `.mp3`, `.m4a`, `.wav`, `.ogg`, `.flac` _(richiede FFmpeg)_            |
+| Categoria     | Estensioni                                                                                                                                         |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Testo**     | `.txt`, `.md`, `.csv`, `.log`                                                                                                                      |
+| **Codice**    | `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.yml`, `.xml`, `.html`, `.css`, `.java`, `.cpp`, `.c`, `.cs`, `.go`, `.rb`, `.php`, `.sh`, `.bash`, `.sql` |
+| **Documenti** | `.pdf`, `.xlsx`, `.ipynb`                                                                                                                          |
+| **Audio**     | `.mp3`, `.m4a`, `.wav`, `.ogg`, `.flac` _(richiede FFmpeg)_                                                                                        |
 
 ## Requisiti
 
@@ -51,7 +52,7 @@ copy .env.example .env
 python ingest.py
 ```
 
-> **Nota**: Il primo avvio scarica il modello embedding (~420MB). Una tantum.
+> **Nota**: Il primo avvio scarica il modello Jina Embeddings v3. Una tantum.
 
 ## 📖 Utilizzo
 
@@ -76,7 +77,20 @@ Comandi: `/help`, `/stats`, `/exit`
 python mcp_server.py
 ```
 
-Funziona in modalità **stdio** (per Claude Desktop, Cursor, VS Code) o come server standalone.
+Funziona in modalità **stdio** (per Antigravity, Claude Desktop, Cursor, VS Code).
+
+**Configurazione Antigravity** (`~/.gemini/antigravity/mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "rag-search": {
+      "command": "c:/path/to/file-search/.venv/Scripts/python.exe",
+      "args": ["c:/path/to/file-search/mcp_server.py"]
+    }
+  }
+}
+```
 
 **Configurazione Claude Desktop** (`claude_desktop_config.json`):
 
@@ -94,17 +108,54 @@ Funziona in modalità **stdio** (per Claude Desktop, Cursor, VS Code) o come ser
 
 ## ⚙️ Configurazione
 
-Modifica `config.yaml`:
+Tutte le impostazioni sono centralizzate in `config.yaml`:
 
 ```yaml
-documents_path: "./data" # Cartella documenti sorgente
-vectorstore_path: "./qdrant_storage" # Database vettoriale
-chunk_size: 1024 # Dimensione chunk
-chunk_overlap: 200 # Sovrapposizione
-top_k: 10 # Risultati per query
-model: "gemini-3-pro-preview" # Modello LLM
-temperature: 0.7
-max_tokens: 4096
+# ===== PERCORSI =====
+documents_path: "./data"
+vectorstore_path: "./qdrant_storage"
+
+# ===== EMBEDDING MODEL =====
+embedding_model: "jinaai/jina-embeddings-v3"
+embedding_dimension: 1024
+embedding_task_passage: "retrieval.passage"
+embedding_task_query: "retrieval.query"
+trust_remote_code: true
+
+# ===== CHUNKING =====
+chunk_size: 1024
+chunk_overlap: 200
+min_text_length: 50
+
+# ===== QDRANT =====
+qdrant_collection: "documents"
+
+# ===== RICERCA =====
+top_k: 10
+similarity_threshold: 0.7
+
+# ===== LLM (per chat.py) =====
+model: "gemini-3-pro-preview"
+temperature: 0.2
+max_tokens: 2048
+
+# ===== SERVER MCP =====
+mcp_server_name: "rag-search"
+
+# ===== AUDIO (WHISPER) =====
+whisper_model: "base" # small, medium, large
+
+# ===== LOGGING =====
+log_level: "INFO"
+log_file: "rag_system.log"
+
+# ===== FILE EXTENSIONS =====
+extensions:
+  text: [".txt", ".md", ".py", ...]
+  pdf: [".pdf"]
+  audio: [".mp3", ".m4a", ".wav", ".ogg", ".flac"]
+  notebook: [".ipynb"]
+  excel: [".xlsx"]
 ```
 
 ## 📁 Struttura Progetto
@@ -113,11 +164,12 @@ max_tokens: 4096
 file-search/
 ├── data/                 # Documenti da indicizzare
 ├── qdrant_storage/       # Database vettoriale (auto-generato)
-├── ingest.py             # Script ingestione
-├── chat.py               # Chatbot interattivo
-├── mcp_server.py         # Server MCP
-├── utils.py              # Funzioni comuni
-├── config.yaml           # Configurazione
+├── ingest.py             # Script ingestione documenti
+├── chat.py               # Chatbot interattivo con RAG
+├── mcp_server.py         # Server MCP per IDE/assistenti
+├── extractors.py         # Estrattori testo (PDF, audio, Excel, notebook)
+├── utils.py              # Funzioni utility condivise
+├── config.yaml           # Configurazione centralizzata
 ├── requirements.txt      # Dipendenze Python
 ├── .env.example          # Template variabili ambiente
 └── README.md
@@ -131,6 +183,7 @@ file-search/
 | `Nessun documento trovato`   | Aggiungi file nella cartella `data/`         |
 | `ModuleNotFoundError`        | Esegui `pip install -r requirements.txt`     |
 | Primo avvio lento            | Normale: sta scaricando il modello embedding |
+| Errori audio transcription   | Installa FFmpeg: `winget install ffmpeg`     |
 
 ## 📄 License
 

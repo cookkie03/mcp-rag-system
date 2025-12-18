@@ -39,9 +39,43 @@ class Ingester:
         self.embedding_dim = config.get('embedding_dimension', 768)
         self.embedding_task = config.get('embedding_task_passage', None)
         
-        self.qdrant = QdrantClient(path=str(self.store_path))
+        # Qdrant connection with lock handling
+        self.qdrant = self._connect_qdrant()
         if self.collection_name not in [c.name for c in self.qdrant.get_collections().collections]:
             self.qdrant.create_collection(self.collection_name, VectorParams(size=self.embedding_dim, distance=Distance.COSINE))
+
+    def _connect_qdrant(self):
+        """Connect to Qdrant with automatic lock handling."""
+        lock_file = Path(self.store_path) / ".lock"
+        
+        # First attempt
+        try:
+            return QdrantClient(path=str(self.store_path))
+        except RuntimeError as e:
+            if "already accessed" not in str(e).lower():
+                raise  # Re-raise if it's a different error
+            
+            console.print("[yellow]Database locked, attempting to remove lock...[/yellow]")
+            
+            # Try removing the lock file
+            try:
+                if lock_file.exists():
+                    lock_file.unlink()
+                    console.print("[green]Lock file removed, retrying connection...[/green]")
+            except PermissionError:
+                pass  # Lock file is held by another process
+            
+            # Second attempt after removing lock
+            try:
+                return QdrantClient(path=str(self.store_path))
+            except RuntimeError as e2:
+                console.print(f"\n[bold red]Error:[/bold red] {e2}")
+                console.print("\n[bold yellow]The Qdrant database is locked by another process (likely the MCP server).[/bold yellow]")
+                console.print("[cyan]To fix this issue:[/cyan]")
+                console.print("  1. Restart your IDE (Antigravity/VS Code) to release the lock")
+                console.print("  2. Or manually delete the lock file: [dim]qdrant_storage/.lock[/dim]")
+                console.print("  3. Then run this script again\n")
+                sys.exit(1)
 
         self.registry_file = Path(self.store_path) / ".registry.json"
         self.registry = json.loads(self.registry_file.read_text()) if self.registry_file.exists() else {}
