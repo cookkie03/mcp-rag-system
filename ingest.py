@@ -15,13 +15,13 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue
 
 from utils import load_config, load_environment, ensure_directory, is_supported_file
-from extractors import extract_text, PDF_EXTENSIONS, AUDIO_EXTENSIONS
+from extractors import extract_text, PDF_EXTENSIONS, AUDIO_EXTENSIONS, NOTEBOOK_EXTENSIONS, EXCEL_EXTENSIONS
 
 console = Console()
 
 # Estensioni supportate
 TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.xml', '.html', '.css', '.csv'}
-ALL_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSIONS | AUDIO_EXTENSIONS
+ALL_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSIONS | AUDIO_EXTENSIONS | NOTEBOOK_EXTENSIONS | EXCEL_EXTENSIONS
 
 
 class Ingester:

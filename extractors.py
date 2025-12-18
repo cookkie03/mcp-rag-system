@@ -1,4 +1,4 @@
-"""Estrattori di testo per formati non-testuali (PDF, Audio)"""
+"""Estrattori di testo per formati non-testuali (PDF, Audio, Notebook, Excel)"""
 
 import logging
 from pathlib import Path
@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 # Estensioni speciali (richiedono estrazione)
 PDF_EXTENSIONS = {'.pdf'}
 AUDIO_EXTENSIONS = {'.mp3', '.m4a', '.wav', '.ogg', '.flac'}
+NOTEBOOK_EXTENSIONS = {'.ipynb'}
+EXCEL_EXTENSIONS = {'.xlsx'}
 
 
 def extract_pdf_text(file_path: Path) -> str:
@@ -35,6 +37,28 @@ def extract_audio_text(file_path: Path, model_name: str = "base") -> str:
     return result["text"].strip()
 
 
+def extract_notebook_text(file_path: Path) -> str:
+    """Estrae testo da Jupyter Notebook (code + markdown cells)"""
+    import json
+    nb = json.loads(file_path.read_text(encoding='utf-8'))
+    texts = []
+    for cell in nb.get('cells', []):
+        source = cell.get('source', [])
+        texts.append(''.join(source) if isinstance(source, list) else source)
+    return '\n\n'.join(texts).strip()
+
+
+def extract_excel_text(file_path: Path) -> str:
+    """Estrae testo da Excel (.xlsx)"""
+    from openpyxl import load_workbook
+    wb = load_workbook(file_path, read_only=True, data_only=True)
+    texts = []
+    for sheet in wb:
+        for row in sheet.iter_rows(values_only=True):
+            texts.append(' '.join(str(c) for c in row if c is not None))
+    return '\n'.join(texts).strip()
+
+
 def extract_text(file_path: Path) -> tuple[str, str | None]:
     """Estrae testo da qualsiasi formato supportato.
     
@@ -51,6 +75,10 @@ def extract_text(file_path: Path) -> tuple[str, str | None]:
             return extract_pdf_text(file_path), None
         elif ext in AUDIO_EXTENSIONS:
             return extract_audio_text(file_path), None
+        elif ext in NOTEBOOK_EXTENSIONS:
+            return extract_notebook_text(file_path), None
+        elif ext in EXCEL_EXTENSIONS:
+            return extract_excel_text(file_path), None
         else:
             # File di testo normale
             return file_path.read_text(encoding='utf-8', errors='ignore').strip(), None
@@ -59,3 +87,4 @@ def extract_text(file_path: Path) -> tuple[str, str | None]:
     except Exception as e:
         logger.error(f"Errore estrazione {file_path}: {e}")
         return "", str(e)
+

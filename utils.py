@@ -50,7 +50,7 @@ def ensure_directory(path: str) -> Path:
 
 
 def get_supported_file_extensions() -> set:
-    """Estensioni supportate (testo + PDF + audio)"""
+    """Estensioni supportate (testo + PDF + audio + notebook + excel)"""
     return {
         # Testo puro
         '.txt', '.md', '.csv', '.log',
@@ -63,7 +63,11 @@ def get_supported_file_extensions() -> set:
         # PDF
         '.pdf',
         # Audio (richiede FFmpeg)
-        '.mp3', '.m4a', '.wav', '.ogg', '.flac'
+        '.mp3', '.m4a', '.wav', '.ogg', '.flac',
+        # Notebook
+        '.ipynb',
+        # Excel
+        '.xlsx'
     }
 
 

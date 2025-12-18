@@ -15,12 +15,12 @@ Sistema RAG (Retrieval-Augmented Generation) production-ready con **embedding lo
 
 ## 📄 Formati Supportati
 
-| Categoria  | Estensioni                                                             |
-| ---------- | ---------------------------------------------------------------------- |
-| **Testo**  | `.txt`, `.md`, `.csv`                                                  |
-| **Codice** | `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.yml`, `.xml`, `.html`, `.css` |
-
-> ⚠️ **PDF, DOCX, immagini e audio NON sono supportati** (richiederebbero librerie aggiuntive).
+| Categoria     | Estensioni                                                             |
+| ------------- | ---------------------------------------------------------------------- |
+| **Testo**     | `.txt`, `.md`, `.csv`, `.log`                                          |
+| **Codice**    | `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.yml`, `.xml`, `.html`, `.css` |
+| **Documenti** | `.pdf`, `.xlsx`, `.ipynb`                                              |
+| **Audio**     | `.mp3`, `.m4a`, `.wav`, `.ogg`, `.flac` _(richiede FFmpeg)_            |
 
 ## Requisiti
 
