@@ -32,6 +32,9 @@ Modifica `.env`:
 
 ```
 GOOGLE_API_KEY=la_tua_chiave_qui
+# Opzionale: Fallback per limiti API Google
+HUGGING_FACE_TOKEN=la_tua_token_hf_qui
+
 ```
 
 ## Utilizzo
@@ -170,3 +173,4 @@ rag-system/
 | `Porta 8080 in uso`          | Cambia `mcp_port` in `config.yaml`       |
 | `ModuleNotFoundError`        | Esegui `pip install -r requirements.txt` |
 | `Errore embedding`           | Verifica che la API key sia valida       |
+| `Rate Limit (429)`           | Aggiungi `HUGGING_FACE_TOKEN` nel `.env` |

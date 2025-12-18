@@ -6,6 +6,7 @@ import uuid
 import time
 import json
 import hashlib
+import requests
 from pathlib import Path
 from datetime import datetime
 
@@ -41,6 +42,9 @@ class Ingester:
         # Nuovo client Google GenAI
         api_key = get_api_key("GOOGLE_API_KEY")
         self.genai_client = genai.Client(api_key=api_key)
+        
+        # Hugging Face Fallback
+        self.hf_token = os.getenv("HUGGING_FACE_TOKEN")
 
         # Splitter datapizza
         self.splitter = TextSplitter(
@@ -129,6 +133,20 @@ class Ingester:
                     files.append(p)
         return sorted(files)
 
+    def _embed_hf(self, texts):
+        """Fallback su Hugging Face API"""
+        if not self.hf_token:
+            raise ValueError("HUGGING_FACE_TOKEN non trovata per fallback")
+            
+        api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-mpnet-base-v2"
+        headers = {"Authorization": f"Bearer {self.hf_token}"}
+        
+        response = requests.post(api_url, headers=headers, json={"inputs": texts, "options": {"wait_for_model": True}})
+        if response.status_code != 200:
+            raise Exception(f"HF Error {response.status_code}: {response.text}")
+            
+        return response.json()
+
     def embed(self, text, retries=5):
         """Embed singolo testo"""
         return self.embed_batch([text])[0]
@@ -148,6 +166,14 @@ class Ingester:
             except Exception as e:
                 error_str = str(e)
                 if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+                    if self.hf_token:
+                        console.print("[yellow]Rate limit Google, fallback su Hugging Face...[/yellow]")
+                        try:
+                            return self._embed_hf(texts)
+                        except Exception as hf_e:
+                            console.print(f"[red]Fallback fallito: {hf_e}[/red]")
+                            # Se fallisce anche HF, continua col retry google standard
+                    
                     match = re.search(r'retryDelay.*?(\d+)', error_str)
                     wait_time = int(match.group(1)) + 5 if match else 65
                     console.print(f"[yellow]Rate limit, attendo {wait_time}s...[/yellow]")
