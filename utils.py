@@ -50,26 +50,20 @@ def ensure_directory(path: str) -> Path:
 
 
 def get_supported_file_extensions() -> set:
-    """Estensioni supportate (60+)"""
+    """Estensioni supportate (testo + PDF + audio)"""
     return {
-        # Office
-        '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls',
-        '.odt', '.odp', '.ods',
-        # Web & Markup
-        '.html', '.htm', '.mhtml', '.xml', '.md', '.rst', '.tex', '.latex',
-        # Code
-        '.py', '.ipynb', '.js', '.ts', '.json', '.yaml', '.yml', '.toml',
-        '.java', '.cpp', '.c', '.cs', '.go', '.rb', '.php', '.swift',
-        '.kt', '.scala', '.r', '.m', '.h', '.hpp', '.sh', '.bash',
-        # Audio
-        '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.opus', '.wma',
-        # Images
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.svg',
-        '.ico', '.heic', '.heif',
-        # Subtitles
-        '.vtt', '.srt', '.ass', '.ssa',
-        # Archives
-        '.zip', '.tar', '.gz', '.rar', '.7z'
+        # Testo puro
+        '.txt', '.md', '.csv', '.log',
+        # Markup
+        '.html', '.htm', '.xml',
+        # Codice
+        '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.css',
+        '.java', '.cpp', '.c', '.cs', '.go', '.rb', '.php',
+        '.sh', '.bash', '.sql',
+        # PDF
+        '.pdf',
+        # Audio (richiede FFmpeg)
+        '.mp3', '.m4a', '.wav', '.ogg', '.flac'
     }
 
 

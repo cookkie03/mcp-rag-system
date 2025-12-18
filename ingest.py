@@ -1,8 +1,10 @@
-"""Document Ingestion - Local Embeddings + Qdrant"""
+"""
+Document Ingestion - Local Embeddings + Qdrant
+Indicizza documenti testuali in un database vettoriale per ricerca semantica.
+"""
 
 import os, sys, uuid, time, json, hashlib
 from pathlib import Path
-from datetime import datetime
 
 from rich.console import Console
 from rich.progress import Progress
@@ -13,17 +15,23 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue
 
 from utils import load_config, load_environment, ensure_directory, is_supported_file
+from extractors import extract_text, PDF_EXTENSIONS, AUDIO_EXTENSIONS
 
 console = Console()
+
+# Estensioni supportate
+TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.xml', '.html', '.css', '.csv'}
+ALL_EXTENSIONS = TEXT_EXTENSIONS | PDF_EXTENSIONS | AUDIO_EXTENSIONS
+
 
 class Ingester:
     def __init__(self, config):
         self.config = config
         self.docs_path = ensure_directory(config['documents_path'])
         self.store_path = ensure_directory(config['vectorstore_path'])
-        self.stats = {'processed': 0, 'chunks': 0, 'deleted': 0, 'errors': []}
+        self.stats = {'processed': 0, 'chunks': 0, 'deleted': 0, 'skipped': 0, 'errors': []}
 
-        console.print("[yellow]Caricamento modello...[/yellow]")
+        console.print("[yellow]Caricamento modello embedding...[/yellow]")
         self.model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
         
         self.qdrant = QdrantClient(path=str(self.store_path))
@@ -34,6 +42,7 @@ class Ingester:
         self.registry = json.loads(self.registry_file.read_text()) if self.registry_file.exists() else {}
 
     def _hash(self, path):
+        """Calcola hash MD5 del file"""
         h = hashlib.md5()
         with open(path, 'rb') as f:
             for chunk in iter(lambda: f.read(8192), b""):
@@ -41,53 +50,112 @@ class Ingester:
         return h.hexdigest()
 
     def _delete_vectors(self, filename):
+        """Elimina vettori di un file dal database"""
         try:
             self.qdrant.delete("documents", Filter(must=[FieldCondition(key="source", match=MatchValue(value=filename))]))
-        except: pass
+        except: 
+            pass
+
+    def _chunk_text(self, text, size=1000, overlap=200):
+        """Divide il testo in chunks con overlap"""
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + size
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            start += size - overlap
+        return chunks
 
     def _ingest(self, path):
+        """Processa un singolo file"""
+        # Verifica formato supportato
+        if path.suffix.lower() not in ALL_EXTENSIONS:
+            return 0, f"Formato non supportato: {path.suffix}"
+        
+        # Elimina vecchi vettori
         self._delete_vectors(path.name)
-        text = path.read_text(encoding='utf-8', errors='ignore').strip()
-        if not text:
-            return 0
         
-        # Simple chunking with safety truncation
-        size, overlap, max_chunk = self.config['chunk_size'], self.config['chunk_overlap'], 2000
-        raw_chunks = [text[i:i+size] for i in range(0, len(text), size - overlap) if text[i:i+size].strip()]
+        # Estrai testo (gestisce PDF, audio e testo normale)
+        text, err = extract_text(path)
+        if err:
+            return 0, f"Errore estrazione: {err}"
         
-        # Truncate oversized chunks
-        chunks = []
-        for c in raw_chunks:
-            if len(c) > max_chunk:
-                chunks.extend([c[i:i+max_chunk] for i in range(0, len(c), max_chunk) if c[i:i+max_chunk].strip()])
-            else:
-                chunks.append(c)
+        if not text or len(text) < 50:
+            return 0, "File troppo corto"
         
+        # Chunking
+        chunks = self._chunk_text(text, self.config['chunk_size'], self.config['chunk_overlap'])
         if not chunks:
-            return 0
+            return 0, "Nessun chunk generato"
         
-        vectors = self.model.encode(chunks, show_progress_bar=False).tolist()
-        points = [PointStruct(id=str(uuid.uuid4()), vector=v, payload={'text': c, 'source': path.name}) 
-                  for c, v in zip(chunks, vectors)]
-        self.qdrant.upsert("documents", points)
-        return len(points)
+        # Embedding
+        try:
+            # encode() con convert_to_numpy=False restituisce tensor, usiamo convert_to_tensor=False
+            raw_embeddings = self.model.encode(chunks, show_progress_bar=False)
+            
+            # Converti in liste Python pure (niente numpy)
+            vectors = []
+            for emb in raw_embeddings:
+                # Ogni emb potrebbe essere numpy.ndarray o list
+                if hasattr(emb, 'tolist'):
+                    vectors.append(emb.tolist())
+                else:
+                    vectors.append(list(emb))
+        except Exception as e:
+            return 0, f"Errore embedding: {e}"
+        
+        # Verifica dimensioni
+        if len(vectors) != len(chunks):
+            return 0, f"Mismatch: {len(chunks)} chunks vs {len(vectors)} vectors"
+        
+        # Crea punti
+        points = []
+        for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+            if len(vector) != 768:
+                continue  # Skip vettori malformati
+            points.append(PointStruct(
+                id=str(uuid.uuid4()),
+                vector=vector,
+                payload={'text': chunk, 'source': path.name, 'chunk_id': i}
+            ))
+        
+        if not points:
+            return 0, "Nessun punto valido"
+        
+        # Upsert
+        try:
+            self.qdrant.upsert("documents", points)
+        except Exception as e:
+            return 0, f"Errore upsert: {e}"
+        
+        return len(points), None
 
     def run(self, clean=False):
         start = time.time()
         
         if clean:
-            try: self.qdrant.delete_collection("documents")
-            except: pass
+            try: 
+                self.qdrant.delete_collection("documents")
+            except: 
+                pass
             self.qdrant.create_collection("documents", VectorParams(size=768, distance=Distance.COSINE))
             self.registry = {}
             console.print("[yellow]Storage pulito[/yellow]")
 
         # Scan files
-        files = {str(p.relative_to(self.docs_path)): p 
-                 for p in Path(self.docs_path).rglob("*") if p.is_file() and is_supported_file(str(p))}
+        files = {}
+        for p in Path(self.docs_path).rglob("*"):
+            if p.is_file() and p.suffix.lower() in ALL_EXTENSIONS:
+                key = str(p.relative_to(self.docs_path))
+                files[key] = p
         
         # Detect changes
-        new, mod, deleted = [], [], [k for k in self.registry if k not in files]
+        new, mod, deleted = [], [], []
+        for k in self.registry:
+            if k not in files:
+                deleted.append(k)
         for key, path in files.items():
             h = self._hash(path)
             if key not in self.registry:
@@ -95,7 +163,7 @@ class Ingester:
             elif self.registry[key] != h:
                 mod.append((key, path, h))
 
-        console.print(Panel(f"Nuovi: {len(new)} | Modificati: {len(mod)} | Eliminati: {len(deleted)}", title="Analisi"))
+        console.print(Panel(f"Trovati: {len(files)} file | Nuovi: {len(new)} | Mod: {len(mod)} | Del: {len(deleted)}", title="Analisi"))
         
         if not (new or mod or deleted):
             console.print("[green]Tutto aggiornato![/green]")
@@ -116,21 +184,29 @@ class Ingester:
             if to_do:
                 task = prog.add_task("[green]Ingestione...", total=len(to_do))
                 for key, path, h in to_do:
-                    try:
-                        n = self._ingest(path)
+                    n, err = self._ingest(path)
+                    if err:
+                        self.stats['errors'].append(f"{path.name}: {err}")
+                        self.stats['skipped'] += 1
+                    else:
                         self.registry[key] = h
                         self.stats['processed'] += 1
                         self.stats['chunks'] += n
-                    except Exception as e:
-                        self.stats['errors'].append(f"{path.name}: {e}")
                     prog.advance(task)
 
         self.registry_file.write_text(json.dumps(self.registry))
-        console.print(Panel(f"Chunks: {self.stats['chunks']} | Tempo: {int(time.time()-start)}s", title="Done", border_style="green"))
+        
+        elapsed = int(time.time() - start)
+        console.print(Panel(
+            f"Processati: {self.stats['processed']} | Chunks: {self.stats['chunks']} | Skipped: {self.stats['skipped']} | Tempo: {elapsed}s",
+            title="Completato", border_style="green"
+        ))
         
         if self.stats['errors']:
+            console.print("\n[bold red]Errori:[/bold red]")
             for e in self.stats['errors']:
-                console.print(f"[red]{e}[/red]")
+                console.print(f"  • {e}")
+
 
 if __name__ == "__main__":
     load_environment()

@@ -13,6 +13,15 @@ Sistema RAG (Retrieval-Augmented Generation) production-ready con **embedding lo
 - **🔌 MCP Server**: Compatibile con Claude Desktop, VS Code, Cursor e altri client MCP
 - **🚀 Zero Rate Limits**: Nessun limite API per l'indicizzazione
 
+## 📄 Formati Supportati
+
+| Categoria  | Estensioni                                                             |
+| ---------- | ---------------------------------------------------------------------- |
+| **Testo**  | `.txt`, `.md`, `.csv`                                                  |
+| **Codice** | `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.yml`, `.xml`, `.html`, `.css` |
+
+> ⚠️ **PDF, DOCX, immagini e audio NON sono supportati** (richiederebbero librerie aggiuntive).
+
 ## Requisiti
 
 - Python 3.10+
