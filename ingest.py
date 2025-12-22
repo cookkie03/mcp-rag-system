@@ -43,6 +43,10 @@ class Ingester:
         self.qdrant = self._connect_qdrant()
         if self.collection_name not in [c.name for c in self.qdrant.get_collections().collections]:
             self.qdrant.create_collection(self.collection_name, VectorParams(size=self.embedding_dim, distance=Distance.COSINE))
+        
+        # File registry per tracciare i file già indicizzati
+        self.registry_file = Path(self.store_path) / ".registry.json"
+        self.registry = json.loads(self.registry_file.read_text()) if self.registry_file.exists() else {}
 
     def _connect_qdrant(self):
         """Connect to Qdrant with automatic lock handling."""
@@ -72,13 +76,11 @@ class Ingester:
                 console.print(f"\n[bold red]Error:[/bold red] {e2}")
                 console.print("\n[bold yellow]The Qdrant database is locked by another process (likely the MCP server).[/bold yellow]")
                 console.print("[cyan]To fix this issue:[/cyan]")
-                console.print("  1. Restart your IDE (Antigravity/VS Code) to release the lock")
-                console.print("  2. Or manually delete the lock file: [dim]qdrant_storage/.lock[/dim]")
-                console.print("  3. Then run this script again\n")
+                console.print("  1. Run [bold]python process_manager.py[/bold] to view and terminate blocking processes")
+                console.print("  2. Restart your IDE (Antigravity/VS Code) to release the lock")
+                console.print("  3. Manually delete the lock file: [dim]qdrant_storage/.lock[/dim]")
+                console.print("  4. Then run this script again\n")
                 sys.exit(1)
-
-        self.registry_file = Path(self.store_path) / ".registry.json"
-        self.registry = json.loads(self.registry_file.read_text()) if self.registry_file.exists() else {}
 
     def _hash(self, path):
         """Calcola hash MD5 del file"""
