@@ -2,7 +2,6 @@
 
 # ===== PERCORSI =====
 documents_path: "./data"
-vectorstore_path: "./qdrant_storage"
 
 # ===== EMBEDDING MODEL =====
 embedding_model: "jinaai/jina-embeddings-v3"
@@ -16,29 +15,21 @@ chunk_size: 1024
 chunk_overlap: 200
 min_text_length: 50
 
-# ===== QDRANT =====
+# ===== QDRANT (Docker HTTP Server) =====
+qdrant_host: "localhost"
+qdrant_port: 6333
 qdrant_collection: "documents"
 
 # ===== RICERCA =====
 top_k: 10
-similarity_threshold: 0.7
 
 # ===== LLM (per chat.py) =====
 model: "gemini-3-pro-preview"
 temperature: 0.2
 max_tokens: 2048
 
-# ===== SERVER MCP =====
-mcp_server_name: "rag-search"
-mcp_port: 8080
-mcp_host: "127.0.0.1"
-
 # ===== AUDIO (WHISPER) =====
 whisper_model: "base"
-
-# ===== LOGGING =====
-log_level: "INFO"
-log_file: "rag_system.log"
 
 # ===== PROCESSING =====
 hash_buffer_size: 8192

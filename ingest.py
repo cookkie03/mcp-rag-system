@@ -1,9 +1,9 @@
 """
-Document Ingestion - Local Embeddings + Qdrant
+Document Ingestion - Local Embeddings + Qdrant (Docker HTTP)
 Indicizza documenti testuali in un database vettoriale per ricerca semantica.
 """
 
-import os, sys, uuid, time, json, hashlib
+import sys, uuid, time, json, hashlib
 from pathlib import Path
 
 from rich.console import Console
@@ -19,12 +19,14 @@ from extractors import extract_text
 
 console = Console()
 
+# Directory per il registry locale (traccia file già indicizzati)
+REGISTRY_DIR = Path(__file__).parent / ".ingest_cache"
+
 
 class Ingester:
     def __init__(self, config):
         self.config = config
         self.docs_path = ensure_directory(config['documents_path'])
-        self.store_path = ensure_directory(config['vectorstore_path'])
         self.stats = {'processed': 0, 'chunks': 0, 'deleted': 0, 'skipped': 0, 'errors': []}
 
         # Parametri da config
@@ -39,48 +41,20 @@ class Ingester:
         self.embedding_dim = config.get('embedding_dimension', 768)
         self.embedding_task = config.get('embedding_task_passage', None)
         
-        # Qdrant connection with lock handling
-        self.qdrant = self._connect_qdrant()
+        # Connessione Qdrant HTTP (Docker)
+        self.qdrant = QdrantClient(
+            host=config.get('qdrant_host', 'localhost'),
+            port=config.get('qdrant_port', 6333)
+        )
+        
+        # Crea collection se non esiste
         if self.collection_name not in [c.name for c in self.qdrant.get_collections().collections]:
             self.qdrant.create_collection(self.collection_name, VectorParams(size=self.embedding_dim, distance=Distance.COSINE))
         
         # File registry per tracciare i file già indicizzati
-        self.registry_file = Path(self.store_path) / ".registry.json"
+        REGISTRY_DIR.mkdir(exist_ok=True)
+        self.registry_file = REGISTRY_DIR / "registry.json"
         self.registry = json.loads(self.registry_file.read_text()) if self.registry_file.exists() else {}
-
-    def _connect_qdrant(self):
-        """Connect to Qdrant with automatic lock handling."""
-        lock_file = Path(self.store_path) / ".lock"
-        
-        # First attempt
-        try:
-            return QdrantClient(path=str(self.store_path))
-        except RuntimeError as e:
-            if "already accessed" not in str(e).lower():
-                raise  # Re-raise if it's a different error
-            
-            console.print("[yellow]Database locked, attempting to remove lock...[/yellow]")
-            
-            # Try removing the lock file
-            try:
-                if lock_file.exists():
-                    lock_file.unlink()
-                    console.print("[green]Lock file removed, retrying connection...[/green]")
-            except PermissionError:
-                pass  # Lock file is held by another process
-            
-            # Second attempt after removing lock
-            try:
-                return QdrantClient(path=str(self.store_path))
-            except RuntimeError as e2:
-                console.print(f"\n[bold red]Error:[/bold red] {e2}")
-                console.print("\n[bold yellow]The Qdrant database is locked by another process (likely the MCP server).[/bold yellow]")
-                console.print("[cyan]To fix this issue:[/cyan]")
-                console.print("  1. Run [bold]python process_manager.py[/bold] to view and terminate blocking processes")
-                console.print("  2. Restart your IDE (Antigravity/VS Code) to release the lock")
-                console.print("  3. Manually delete the lock file: [dim]qdrant_storage/.lock[/dim]")
-                console.print("  4. Then run this script again\n")
-                sys.exit(1)
 
     def _hash(self, path):
         """Calcola hash MD5 del file"""
@@ -114,14 +88,11 @@ class Ingester:
 
     def _ingest(self, path):
         """Processa un singolo file"""
-        # Verifica formato supportato
         if path.suffix.lower() not in self.all_extensions:
             return 0, f"Formato non supportato: {path.suffix}"
         
-        # Elimina vecchi vettori
         self._delete_vectors(path.name)
         
-        # Estrai testo (gestisce PDF, audio e testo normale)
         text, err = extract_text(path, self.config)
         if err:
             return 0, f"Errore estrazione: {err}"
@@ -129,19 +100,16 @@ class Ingester:
         if not text or len(text) < self.min_text_length:
             return 0, "File troppo corto"
         
-        # Chunking
         chunks = self._chunk_text(text)
         if not chunks:
             return 0, "Nessun chunk generato"
         
-        # Embedding
         try:
             encode_kwargs = {"show_progress_bar": False}
             if self.embedding_task:
                 encode_kwargs["task"] = self.embedding_task
             raw_embeddings = self.model.encode(chunks, **encode_kwargs)
             
-            # Converti in liste Python pure (niente numpy)
             vectors = []
             for emb in raw_embeddings:
                 if hasattr(emb, 'tolist'):
@@ -151,15 +119,13 @@ class Ingester:
         except Exception as e:
             return 0, f"Errore embedding: {e}"
         
-        # Verifica dimensioni
         if len(vectors) != len(chunks):
             return 0, f"Mismatch: {len(chunks)} chunks vs {len(vectors)} vectors"
         
-        # Crea punti
         points = []
         for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
             if len(vector) != self.embedding_dim:
-                continue  # Skip vettori malformati
+                continue
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
                 vector=vector,
@@ -169,7 +135,6 @@ class Ingester:
         if not points:
             return 0, "Nessun punto valido"
         
-        # Upsert
         try:
             self.qdrant.upsert(self.collection_name, points)
         except Exception as e:
@@ -215,7 +180,6 @@ class Ingester:
             return
 
         with Progress() as prog:
-            # Delete
             if deleted:
                 task = prog.add_task("[red]Eliminazione...", total=len(deleted))
                 for key in deleted:
@@ -224,7 +188,6 @@ class Ingester:
                     self.stats['deleted'] += 1
                     prog.advance(task)
 
-            # Ingest
             to_do = new + mod
             if to_do:
                 task = prog.add_task("[green]Ingestione...", total=len(to_do))

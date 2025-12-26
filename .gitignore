@@ -48,9 +48,7 @@ env/
 # Project specific
 *.log
 .cache/
+.ingest_cache/
 
-# Dati sensibili o pesanti
-data/*
-!data/.keep
-qdrant_storage/*
-!qdrant_storage/.keep
+# Dati sensibili/pesanti
+data/

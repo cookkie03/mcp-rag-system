@@ -31,7 +31,7 @@ def _load_config():
 
 CONFIG = _load_config()
 
-# === Pre-caricamento modello e Qdrant (EAGER LOADING) ===
+# === Pre-caricamento modello e Qdrant ===
 sys.stderr.write("[MCP] Caricamento modello AI...\n")
 sys.stderr.flush()
 
@@ -41,7 +41,10 @@ from qdrant_client import QdrantClient
 model_kwargs = {"trust_remote_code": CONFIG.get('trust_remote_code', False)}
 MODEL = SentenceTransformer(CONFIG['embedding_model'], **model_kwargs)
 EMBEDDING_TASK_QUERY = CONFIG.get('embedding_task_query', None)
-QDRANT = QdrantClient(path=str(PROJECT_DIR / CONFIG['vectorstore_path']))
+QDRANT = QdrantClient(
+    host=CONFIG.get('qdrant_host', 'localhost'),
+    port=CONFIG.get('qdrant_port', 6333)
+)
 
 sys.stderr.write("[MCP] Modello pronto.\n")
 sys.stderr.flush()
@@ -59,7 +62,7 @@ def search_knowledge_base(query: str, limit: int = 10) -> str:
             encode_kwargs["task"] = EMBEDDING_TASK_QUERY
         vector = MODEL.encode(query, **encode_kwargs).tolist()
         results = QDRANT.query_points(
-            collection_name="documents",
+            collection_name=CONFIG.get('qdrant_collection', 'documents'),
             query=vector,
             limit=limit,
             with_payload=True
