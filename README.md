@@ -295,6 +295,7 @@ adaptive_threshold_max: 0.9 # Massimo threshold adattivo
 rerank_enabled: true # Abilita cross-encoder reranking
 rerank_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 rerank_top_n: 30 # Candidati per reranking
+rerank_alpha: 0.4 # Hybrid scoring: peso vector_score (0=solo rerank, 1=solo vector)
 
 # ===== LLM (per chat.py) =====
 model: "gemini-3-pro-preview"

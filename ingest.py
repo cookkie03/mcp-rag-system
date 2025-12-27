@@ -139,127 +139,150 @@ class Ingester:
         # 7. Proteggi acronimi con punti (U.S.A., Ph.D., M.Sc.)
         protected = re.sub(r'\b([A-Z]\.){2,}', lambda m: m.group(0).replace('.', DOT), protected)
         
-        # === SPLIT IN FRASI ===
-        # Split su: . ! ? seguiti da spazio, oppure doppio newline
-        sentences = re.split(r'(?<=[.!?])\s+|\n{2,}', protected)
+        # === SPLIT IN FRASI CON POSIZIONI ===
+        # Usiamo finditer per tracciare la posizione di ogni frase
+        sentence_pattern = re.compile(r'(?<=[.!?])\s+|\n{2,}')
         
-        # Ripristina i punti e pulisci
-        sentences = [s.strip().replace(DOT, '.') for s in sentences if s.strip()]
+        sentences_with_pos = []  # Lista di (sentence_text, start_pos, end_pos)
+        last_end = 0
         
-        if not sentences:
+        for match in sentence_pattern.finditer(protected):
+            # Testo dalla fine dell'ultimo match all'inizio di questo
+            sentence = protected[last_end:match.start()].strip()
+            if sentence:
+                # Ripristina i punti protetti
+                clean_sentence = sentence.replace(DOT, '.')
+                sentences_with_pos.append((clean_sentence, last_end, match.start()))
+            last_end = match.end()
+        
+        # Ultima frase (dopo l'ultimo separatore)
+        if last_end < len(protected):
+            sentence = protected[last_end:].strip()
+            if sentence:
+                clean_sentence = sentence.replace(DOT, '.')
+                sentences_with_pos.append((clean_sentence, last_end, len(protected)))
+        
+        if not sentences_with_pos:
             return []
         
         # === FUNZIONE HELPER: SPLIT GERARCHICO (fallback per frasi lunghe) ===
-        def split_long_segment(segment, max_size):
-            """Split gerarchico stile LangChain: ; -> , -> spazi -> caratteri"""
+        def split_long_segment(segment, start_offset, max_size):
+            """Split gerarchico stile LangChain con tracciamento posizioni"""
             if len(segment) <= max_size:
-                return [segment]
+                return [(segment, start_offset, start_offset + len(segment))]
             
             result = []
+            current_offset = start_offset
             
             # Livello 1: Prova a splittare su punto e virgola
             parts = re.split(r'(?<=[;])\s*', segment)
             if len(parts) > 1:
                 for part in parts:
-                    result.extend(split_long_segment(part.strip(), max_size))
-                return [r for r in result if r]
+                    part = part.strip()
+                    if part:
+                        result.extend(split_long_segment(part, current_offset, max_size))
+                    current_offset += len(part) + 1
+                return [r for r in result if r[0]]
             
             # Livello 2: Prova a splittare su virgola
             parts = re.split(r'(?<=[,])\s*', segment)
             if len(parts) > 1:
                 current = ""
+                chunk_start = current_offset
                 for part in parts:
                     if len(current) + len(part) + 1 <= max_size:
                         current = (current + " " + part).strip() if current else part
                     else:
                         if current:
-                            result.append(current)
+                            result.append((current, chunk_start, chunk_start + len(current)))
+                        chunk_start = current_offset + len(current) + 1
                         current = part
+                    current_offset += len(part) + 1
                 if current:
-                    result.append(current)
-                return [r for r in result if r]
+                    result.append((current, chunk_start, chunk_start + len(current)))
+                return [r for r in result if r[0]]
             
             # Livello 3: Split su spazi (parole)
             words = segment.split()
             current = ""
+            chunk_start = start_offset
             for word in words:
                 if len(current) + len(word) + 1 <= max_size:
                     current = (current + " " + word).strip() if current else word
                 else:
                     if current:
-                        result.append(current)
+                        result.append((current, chunk_start, chunk_start + len(current)))
+                    chunk_start += len(current) + 1
                     current = word
             if current:
-                result.append(current)
+                result.append((current, chunk_start, chunk_start + len(current)))
             
             # Livello 4: Se ancora troppo lungo, split brutale a caratteri
             final_result = []
-            for r in result:
-                if len(r) > max_size:
-                    for i in range(0, len(r), max_size):
-                        final_result.append(r[i:i+max_size])
+            for text_part, s, e in result:
+                if len(text_part) > max_size:
+                    for i in range(0, len(text_part), max_size):
+                        chunk = text_part[i:i+max_size]
+                        final_result.append((chunk, s + i, s + i + len(chunk)))
                 else:
-                    final_result.append(r)
+                    final_result.append((text_part, s, e))
             
-            return [r for r in final_result if r]
+            return [r for r in final_result if r[0]]
         
-        # === AGGREGAZIONE CHUNKS CON POSIZIONI ===
+        # === AGGREGAZIONE CHUNKS CON POSIZIONI ACCURATE ===
         chunks = []  # Lista di (chunk_text, char_start, char_end)
-        current_chunk = []
+        current_chunk = []  # Lista di (text, start, end)
         current_len = 0
         
-        for sentence in sentences:
+        for sentence, sent_start, sent_end in sentences_with_pos:
             sent_len = len(sentence)
             
             # Frase troppo lunga: applica fallback gerarchico
             if sent_len > size:
                 # Prima salva il chunk corrente
                 if current_chunk:
-                    chunk_text = ' '.join(current_chunk)
-                    # Trova posizione nel testo originale
-                    start_pos = text.find(current_chunk[0])
-                    end_pos = text.find(current_chunk[-1]) + len(current_chunk[-1])
-                    chunks.append((chunk_text, start_pos, end_pos))
+                    chunk_text = ' '.join([c[0] for c in current_chunk])
+                    chunk_start = current_chunk[0][1]  # Start della prima frase
+                    chunk_end = current_chunk[-1][2]    # End dell'ultima frase
+                    chunks.append((chunk_text, chunk_start, chunk_end))
                     current_chunk = []
                     current_len = 0
                 
                 # Split gerarchico della frase lunga
-                sub_parts = split_long_segment(sentence, size)
-                for part in sub_parts:
-                    start_pos = text.find(part)
-                    end_pos = start_pos + len(part) if start_pos >= 0 else -1
-                    chunks.append((part, start_pos, end_pos))
+                sub_parts = split_long_segment(sentence, sent_start, size)
+                for part_text, part_start, part_end in sub_parts:
+                    chunks.append((part_text, part_start, part_end))
                 continue
             
             # Se aggiungere la frase supera size, chiudi chunk
             if current_len + sent_len + 1 > size and current_chunk:
-                chunk_text = ' '.join(current_chunk)
-                start_pos = text.find(current_chunk[0])
-                end_pos = text.find(current_chunk[-1]) + len(current_chunk[-1])
-                chunks.append((chunk_text, start_pos, end_pos))
+                chunk_text = ' '.join([c[0] for c in current_chunk])
+                chunk_start = current_chunk[0][1]
+                chunk_end = current_chunk[-1][2]
+                chunks.append((chunk_text, chunk_start, chunk_end))
                 
                 # Overlap semantico: mantieni ultime frasi che rientrano in 'overlap'
                 overlap_chunk = []
                 overlap_len = 0
-                for s in reversed(current_chunk):
-                    if overlap_len + len(s) + 1 <= overlap:
-                        overlap_chunk.insert(0, s)
-                        overlap_len += len(s) + 1
+                for item in reversed(current_chunk):
+                    if overlap_len + len(item[0]) + 1 <= overlap:
+                        overlap_chunk.insert(0, item)
+                        overlap_len += len(item[0]) + 1
                     else:
                         break
                 
                 current_chunk = overlap_chunk
                 current_len = overlap_len
             
-            current_chunk.append(sentence)
+            current_chunk.append((sentence, sent_start, sent_end))
             current_len += sent_len + 1
         
         # Ultimo chunk
         if current_chunk:
-            chunk_text = ' '.join(current_chunk)
-            start_pos = text.find(current_chunk[0])
-            end_pos = text.find(current_chunk[-1]) + len(current_chunk[-1])
-            chunks.append((chunk_text, start_pos, end_pos))
+            chunk_text = ' '.join([c[0] for c in current_chunk])
+            chunk_start = current_chunk[0][1]
+            chunk_end = current_chunk[-1][2]
+            chunks.append((chunk_text, chunk_start, chunk_end))
         
         return chunks
 

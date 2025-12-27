@@ -246,6 +246,7 @@ try:
     RERANK_ENABLED = CONFIG.get('rerank_enabled', False)
     RERANK_MODEL = None
     RERANK_TOP_N = CONFIG.get('rerank_top_n', 30)
+    RERANK_ALPHA = CONFIG.get('rerank_alpha', 0.4)  # Peso vector_score in hybrid
     
     if RERANK_ENABLED:
         from sentence_transformers import CrossEncoder
@@ -345,17 +346,30 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
                 # Prepara coppie (query, testo) per cross-encoder
                 pairs = [(query_stripped, r.payload.get('text', '')) for r in results.points]
                 
-                # Calcola score di reranking
-                rerank_scores = RERANK_MODEL.predict(pairs, show_progress_bar=False)
+                # Calcola score di reranking (logits)
+                rerank_logits = RERANK_MODEL.predict(pairs, show_progress_bar=False)
                 
-                # Associa score e riordina
+                # Normalizza logits → probabilità [0,1] con sigmoid
+                import math
+                def sigmoid(x):
+                    try:
+                        return 1 / (1 + math.exp(-x))
+                    except OverflowError:
+                        return 0.0 if x < 0 else 1.0
+                
+                # Calcola hybrid score: α * vector_score + (1-α) * rerank_score
+                alpha = RERANK_ALPHA
                 for i, result in enumerate(results.points):
-                    result.rerank_score = float(rerank_scores[i])
+                    normalized_rerank = sigmoid(float(rerank_logits[i]))
+                    vector_score = result.score
+                    
+                    # Hybrid scoring
+                    result.rerank_score = alpha * vector_score + (1 - alpha) * normalized_rerank
                 
                 results.points.sort(key=lambda x: x.rerank_score, reverse=True)
                 results.points = results.points[:limit]  # Tronca a limit richiesto
                 
-                logger.debug(f"Reranking: {len(pairs)} candidati -> {len(results.points)} risultati")
+                logger.debug(f"Reranking hybrid (α={alpha}): {len(pairs)} candidati -> {len(results.points)} risultati")
             except Exception as e:
                 logger.warning(f"Reranking fallito, uso ranking originale: {e}")
 
@@ -365,8 +379,17 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
             METRICS["successful_queries"] += 1
             return "ℹ️ Nessun documento rilevante trovato per questa query."
         
-        # Calcola threshold (adattivo o statico)
-        scores = [r.score for r in results.points]
+        # Determina quale score usare: rerank_score se disponibile, altrimenti score vettoriale
+        use_rerank_score = RERANK_ENABLED and RERANK_MODEL and hasattr(results.points[0], 'rerank_score')
+        
+        def get_score(r):
+            """Restituisce lo score appropriato (rerank o vettoriale)"""
+            if use_rerank_score and hasattr(r, 'rerank_score'):
+                return r.rerank_score
+            return r.score
+        
+        # Calcola threshold (adattivo o statico) usando lo score appropriato
+        scores = [get_score(r) for r in results.points]
         
         if ADAPTIVE_THRESHOLD_ENABLED and len(scores) >= 3:
             # GAP Analysis: trova il gap naturale tra risultati rilevanti e non
@@ -397,10 +420,10 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
         else:
             effective_threshold = SIMILARITY_THRESHOLD
 
-        # Filtra per similarity threshold
+        # Filtra usando lo score appropriato (rerank o vettoriale)
         filtered_results = [
             r for r in results.points
-            if r.score >= effective_threshold
+            if get_score(r) >= effective_threshold
         ]
 
         if not filtered_results:
@@ -433,7 +456,9 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
             chunk_id = result.payload.get('chunk_id', '?')
             char_start = result.payload.get('char_start', -1)
             char_end = result.payload.get('char_end', -1)
-            score = result.score
+            
+            # Usa lo score appropriato (rerank se disponibile)
+            score = get_score(result)
 
             # Indicatore qualità basato su score
             if score >= 0.9:
