@@ -6,15 +6,40 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def extract_pdf_text(file_path: Path) -> str:
-    """Estrae testo da PDF usando PyMuPDF"""
-    import fitz  # pymupdf
+def extract_pdf_text(file_path: Path, mode: str = "markdown") -> str:
+    """
+    Estrae testo da PDF con struttura preservata.
     
+    Args:
+        file_path: Path del PDF
+        mode: "markdown" (strutturato con tabelle) o "text" (legacy)
+        
+    Returns:
+        Testo estratto (Markdown se mode="markdown")
+        
+    Features (mode="markdown"):
+        - Tabelle convertite in formato Markdown
+        - Headers preservati (# ## ###)
+        - Liste formattate (- item)
+        - Struttura colonne gestita
+    """
+    if mode == "markdown":
+        try:
+            import pymupdf4llm
+            # Estrae come Markdown con tabelle, headers, liste
+            md_text = pymupdf4llm.to_markdown(str(file_path))
+            return md_text.strip() if md_text else ""
+        except ImportError:
+            logger.warning("pymupdf4llm non installato, fallback a PyMuPDF base")
+        except Exception as e:
+            logger.warning(f"pymupdf4llm fallito ({e}), fallback a PyMuPDF base")
+    
+    # Fallback: estrazione base con PyMuPDF
+    import fitz
     text_parts = []
     with fitz.open(file_path) as doc:
         for page in doc:
             text_parts.append(page.get_text())
-    
     return "\n\n".join(text_parts).strip()
 
 
@@ -72,16 +97,18 @@ def extract_text(file_path: Path, config: dict = None) -> tuple[str, str | None]
         notebook_ext = set(config.get('extensions', {}).get('notebook', ['.ipynb']))
         excel_ext = set(config.get('extensions', {}).get('excel', ['.xlsx']))
         whisper_model = config.get('whisper_model', 'base')
+        pdf_mode = config.get('pdf_extraction_mode', 'markdown')
     else:
         pdf_ext = {'.pdf'}
         audio_ext = {'.mp3', '.m4a', '.wav', '.ogg', '.flac'}
         notebook_ext = {'.ipynb'}
         excel_ext = {'.xlsx'}
         whisper_model = 'base'
+        pdf_mode = 'markdown'
     
     try:
         if ext in pdf_ext:
-            return extract_pdf_text(file_path), None
+            return extract_pdf_text(file_path, mode=pdf_mode), None
         elif ext in audio_ext:
             return extract_audio_text(file_path, whisper_model), None
         elif ext in notebook_ext:

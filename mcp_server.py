@@ -220,9 +220,14 @@ try:
     SIMILARITY_THRESHOLD = CONFIG.get('similarity_threshold', 0.7)
     COLLECTION_NAME = CONFIG.get('qdrant_collection', 'documents')
     EMBEDDING_TASK_QUERY = CONFIG.get('embedding_task_query', None)
+    
+    # Configurazione threshold adattivo
+    ADAPTIVE_THRESHOLD_ENABLED = CONFIG.get('adaptive_threshold', False)
+    ADAPTIVE_THRESHOLD_MIN = CONFIG.get('adaptive_threshold_min', 0.5)
+    ADAPTIVE_THRESHOLD_MAX = CONFIG.get('adaptive_threshold_max', 0.9)
 
     logger.info("=== MCP RAG Server - Inizializzazione ===")
-    logger.info(f"Similarity threshold: {SIMILARITY_THRESHOLD}")
+    logger.info(f"Similarity threshold: {SIMILARITY_THRESHOLD} (adaptive: {ADAPTIVE_THRESHOLD_ENABLED})")
     logger.info(f"Collection: {COLLECTION_NAME}")
 
 except Exception as e:
@@ -236,6 +241,20 @@ sys.stderr.flush()
 try:
     MODEL = _init_embedding_model(CONFIG)
     QDRANT = _init_qdrant_with_retry(CONFIG)
+    
+    # === Caricamento Cross-Encoder per Reranking (opzionale) ===
+    RERANK_ENABLED = CONFIG.get('rerank_enabled', False)
+    RERANK_MODEL = None
+    RERANK_TOP_N = CONFIG.get('rerank_top_n', 30)
+    
+    if RERANK_ENABLED:
+        from sentence_transformers import CrossEncoder
+        rerank_model_name = CONFIG.get('rerank_model', 'cross-encoder/ms-marco-MiniLM-L-6-v2')
+        logger.info(f"Caricamento cross-encoder: {rerank_model_name}")
+        RERANK_MODEL = CrossEncoder(rerank_model_name)
+        logger.info("Cross-encoder caricato per reranking")
+    else:
+        logger.info("Reranking disabilitato")
 
     sys.stderr.write("[MCP] Sistema pronto.\n")
     sys.stderr.flush()
@@ -302,11 +321,14 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
         # === 3. RICERCA VETTORIALE ===
         try:
             logger.debug(f"Ricerca in Qdrant (collection: {COLLECTION_NAME})...")
+            
+            # Se reranking attivo, recupera più candidati
+            search_limit = RERANK_TOP_N if RERANK_ENABLED and RERANK_MODEL else limit
 
             results = QDRANT.query_points(
                 collection_name=COLLECTION_NAME,
                 query=vector,
-                limit=limit,
+                limit=search_limit,
                 with_payload=True,
                 timeout=QDRANT_TIMEOUT
             )
@@ -316,42 +338,101 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
             METRICS["last_error"] = str(e)
             logger.error(f"Errore ricerca Qdrant: {e}", exc_info=True)
             return f"❌ Errore durante ricerca nel database: {e}"
+        
+        # === 3.5 RERANKING (se abilitato) ===
+        if RERANK_ENABLED and RERANK_MODEL and results.points:
+            try:
+                # Prepara coppie (query, testo) per cross-encoder
+                pairs = [(query_stripped, r.payload.get('text', '')) for r in results.points]
+                
+                # Calcola score di reranking
+                rerank_scores = RERANK_MODEL.predict(pairs, show_progress_bar=False)
+                
+                # Associa score e riordina
+                for i, result in enumerate(results.points):
+                    result.rerank_score = float(rerank_scores[i])
+                
+                results.points.sort(key=lambda x: x.rerank_score, reverse=True)
+                results.points = results.points[:limit]  # Tronca a limit richiesto
+                
+                logger.debug(f"Reranking: {len(pairs)} candidati -> {len(results.points)} risultati")
+            except Exception as e:
+                logger.warning(f"Reranking fallito, uso ranking originale: {e}")
 
-        # === 4. FILTRAGGIO PER QUALITÀ ===
+        # === 4. FILTRAGGIO PER QUALITÀ (con threshold adattivo) ===
         if not results.points:
             logger.info("Nessun risultato trovato")
             METRICS["successful_queries"] += 1
             return "ℹ️ Nessun documento rilevante trovato per questa query."
+        
+        # Calcola threshold (adattivo o statico)
+        scores = [r.score for r in results.points]
+        
+        if ADAPTIVE_THRESHOLD_ENABLED and len(scores) >= 3:
+            # GAP Analysis: trova il gap naturale tra risultati rilevanti e non
+            sorted_scores = sorted(scores, reverse=True)
+            
+            # Calcola i gap tra score consecutivi
+            best_gap = 0
+            threshold_at_gap = SIMILARITY_THRESHOLD
+            
+            for i in range(len(sorted_scores) - 1):
+                gap = sorted_scores[i] - sorted_scores[i + 1]
+                if gap >= 0.08 and gap > best_gap:  # Gap significativo (>= 0.08)
+                    best_gap = gap
+                    # Threshold = valore sotto il gap + piccolo margine
+                    threshold_at_gap = sorted_scores[i + 1] + 0.01
+            
+            if best_gap >= 0.08:
+                # Trovato gap significativo
+                effective_threshold = max(ADAPTIVE_THRESHOLD_MIN, 
+                                         min(ADAPTIVE_THRESHOLD_MAX, threshold_at_gap))
+                logger.debug(f"Threshold adattivo: {effective_threshold:.3f} (gap: {best_gap:.3f})")
+            else:
+                # Nessun gap → usa percentile-based
+                top_half_avg = sum(sorted_scores[:len(sorted_scores)//2 + 1]) / (len(sorted_scores)//2 + 1)
+                effective_threshold = max(ADAPTIVE_THRESHOLD_MIN, 
+                                         min(ADAPTIVE_THRESHOLD_MAX, top_half_avg - 0.12))
+                logger.debug(f"Threshold percentile: {effective_threshold:.3f}")
+        else:
+            effective_threshold = SIMILARITY_THRESHOLD
 
         # Filtra per similarity threshold
         filtered_results = [
             r for r in results.points
-            if r.score >= SIMILARITY_THRESHOLD
+            if r.score >= effective_threshold
         ]
 
         if not filtered_results:
             METRICS["low_quality_queries"] += 1
             logger.info(
                 f"Risultati filtrati (max score: {results.points[0].score:.3f} "
-                f"< threshold: {SIMILARITY_THRESHOLD})"
+                f"< threshold: {effective_threshold:.3f})"
             )
             return (
                 f"ℹ️ Trovati {len(results.points)} risultati ma tutti sotto la soglia "
-                f"di qualità ({SIMILARITY_THRESHOLD}).\n\n"
+                f"di qualità ({effective_threshold:.2f}).\n\n"
                 f"Miglior match: {results.points[0].score:.3f} - "
                 f"Prova a riformulare la query in modo più specifico."
             )
 
         # === 5. FORMATTAZIONE RISULTATI ===
+        threshold_info = f"{effective_threshold:.2f}"
+        if ADAPTIVE_THRESHOLD_ENABLED:
+            threshold_info += " (adattivo)"
+        
         output = [
             f"✅ Trovati {len(filtered_results)} risultati rilevanti "
-            f"(soglia qualità: {SIMILARITY_THRESHOLD}):\n"
+            f"(soglia qualità: {threshold_info}):\n"
         ]
 
         for idx, result in enumerate(filtered_results, 1):
             source = result.payload.get('source', 'Fonte sconosciuta')
+            source_path = result.payload.get('source_path', source)
             text = result.payload.get('text', '').strip()
             chunk_id = result.payload.get('chunk_id', '?')
+            char_start = result.payload.get('char_start', -1)
+            char_end = result.payload.get('char_end', -1)
             score = result.score
 
             # Indicatore qualità basato su score
@@ -361,11 +442,21 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
                 quality = "🟡 Buona"
             else:
                 quality = "🟠 Sufficiente"
+            
+            # Formatta posizione e citazione se disponibile
+            if char_start >= 0 and char_end >= 0:
+                position_info = f"📍 Posizione: caratteri {char_start}-{char_end}\n"
+                citation = f"📝 Citazione: \"{source_path}\", char. {char_start}-{char_end}"
+            else:
+                position_info = ""
+                citation = f"📝 Citazione: \"{source_path}\", chunk {chunk_id}"
 
             output.append(
                 f"[Risultato {idx}/{len(filtered_results)}]\n"
-                f"📄 Fonte: {source} (chunk {chunk_id})\n"
-                f"🎯 Rilevanza: {score:.3f} {quality}\n\n"
+                f"📄 Fonte: {source_path} (chunk {chunk_id})\n"
+                f"{position_info}"
+                f"🎯 Rilevanza: {score:.3f} {quality}\n"
+                f"{citation}\n\n"
                 f"{text}\n"
             )
 

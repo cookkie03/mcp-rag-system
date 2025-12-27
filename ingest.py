@@ -64,26 +64,203 @@ class Ingester:
                 h.update(chunk)
         return h.hexdigest()
 
-    def _delete_vectors(self, filename):
-        """Elimina vettori di un file dal database"""
+    def _delete_vectors(self, source_path):
+        """Elimina vettori di un file dal database usando source_path"""
         try:
-            self.qdrant.delete(self.collection_name, Filter(must=[FieldCondition(key="source", match=MatchValue(value=filename))]))
+            self.qdrant.delete(
+                self.collection_name, 
+                points_selector=Filter(must=[FieldCondition(key="source_path", match=MatchValue(value=source_path))])
+            )
         except: 
             pass
 
     def _chunk_text(self, text, size=None, overlap=None):
-        """Divide il testo in chunks con overlap"""
+        """
+        Divide il testo in chunks semantici rispettando i confini delle frasi.
+        
+        Returns:
+            Lista di tuple: (chunk_text, char_start, char_end)
+        
+        Features:
+        - Protezione abbreviazioni scientifiche (Dr., Fig., et al., i.e., etc.)
+        - Protezione URL, email, numeri decimali
+        - Fallback gerarchico per frasi troppo lunghe (stile LangChain)
+        - Overlap semantico a livello di frasi
+        - Tracciabilità posizione caratteri
+        """
+        import re
+        
         size = size or self.config.get('chunk_size', 1024)
         overlap = overlap or self.config.get('chunk_overlap', 200)
+        mode = self.config.get('chunking_mode', 'sentence')
         
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + size
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            start += size - overlap
+        # === MODALITÀ LEGACY ===
+        if mode == 'character':
+            chunks = []
+            start = 0
+            while start < len(text):
+                end = min(start + size, len(text))
+                chunk = text[start:end].strip()
+                if chunk:
+                    # Trova posizione reale nel testo originale
+                    real_start = text.find(chunk, start)
+                    real_end = real_start + len(chunk)
+                    chunks.append((chunk, real_start, real_end))
+                start += size - overlap
+            return chunks
+        
+        # === PROTEZIONE PATTERN SENSIBILI ===
+        # Placeholder unico per evitare conflitti
+        DOT = '\x00DOT\x00'
+        
+        protected = text
+        
+        # 1. Proteggi URL e email (prima di tutto)
+        protected = re.sub(r'https?://[^\s]+', lambda m: m.group(0).replace('.', DOT), protected)
+        protected = re.sub(r'[\w.-]+@[\w.-]+\.\w+', lambda m: m.group(0).replace('.', DOT), protected)
+        
+        # 2. Proteggi numeri decimali (0.05, 3.14, -2.5)
+        protected = re.sub(r'(\d)\.(\d)', rf'\1{DOT}\2', protected)
+        
+        # 3. Proteggi abbreviazioni titoli
+        protected = re.sub(r'\b(Dr|Mr|Mrs|Ms|Prof|Dott|Ing|Avv|Sig|Sig\.ra)\.', rf'\1{DOT}', protected, flags=re.IGNORECASE)
+        
+        # 4. Proteggi abbreviazioni scientifiche
+        protected = re.sub(r'\b(Fig|Tab|Eq|Vol|No|Ch|Sec|App|Ref|Rev)\.', rf'\1{DOT}', protected, flags=re.IGNORECASE)
+        
+        # 5. Proteggi abbreviazioni latine/accademiche
+        protected = re.sub(r'\b(vs|etc|al|Jr|Sr|Inc|Ltd|Corp|Co)\.', rf'\1{DOT}', protected, flags=re.IGNORECASE)
+        protected = re.sub(r'\b(i\.e|e\.g|et al|cf|ibid|op\.cit|viz|approx|ca)\.?', 
+                          lambda m: m.group(0).replace('.', DOT), protected, flags=re.IGNORECASE)
+        
+        # 6. Proteggi numerazioni (1. 2. 3.) solo a inizio riga o dopo newline
+        protected = re.sub(r'(^|\n)(\d+)\.(\s)', rf'\1\2{DOT}\3', protected)
+        
+        # 7. Proteggi acronimi con punti (U.S.A., Ph.D., M.Sc.)
+        protected = re.sub(r'\b([A-Z]\.){2,}', lambda m: m.group(0).replace('.', DOT), protected)
+        
+        # === SPLIT IN FRASI ===
+        # Split su: . ! ? seguiti da spazio, oppure doppio newline
+        sentences = re.split(r'(?<=[.!?])\s+|\n{2,}', protected)
+        
+        # Ripristina i punti e pulisci
+        sentences = [s.strip().replace(DOT, '.') for s in sentences if s.strip()]
+        
+        if not sentences:
+            return []
+        
+        # === FUNZIONE HELPER: SPLIT GERARCHICO (fallback per frasi lunghe) ===
+        def split_long_segment(segment, max_size):
+            """Split gerarchico stile LangChain: ; -> , -> spazi -> caratteri"""
+            if len(segment) <= max_size:
+                return [segment]
+            
+            result = []
+            
+            # Livello 1: Prova a splittare su punto e virgola
+            parts = re.split(r'(?<=[;])\s*', segment)
+            if len(parts) > 1:
+                for part in parts:
+                    result.extend(split_long_segment(part.strip(), max_size))
+                return [r for r in result if r]
+            
+            # Livello 2: Prova a splittare su virgola
+            parts = re.split(r'(?<=[,])\s*', segment)
+            if len(parts) > 1:
+                current = ""
+                for part in parts:
+                    if len(current) + len(part) + 1 <= max_size:
+                        current = (current + " " + part).strip() if current else part
+                    else:
+                        if current:
+                            result.append(current)
+                        current = part
+                if current:
+                    result.append(current)
+                return [r for r in result if r]
+            
+            # Livello 3: Split su spazi (parole)
+            words = segment.split()
+            current = ""
+            for word in words:
+                if len(current) + len(word) + 1 <= max_size:
+                    current = (current + " " + word).strip() if current else word
+                else:
+                    if current:
+                        result.append(current)
+                    current = word
+            if current:
+                result.append(current)
+            
+            # Livello 4: Se ancora troppo lungo, split brutale a caratteri
+            final_result = []
+            for r in result:
+                if len(r) > max_size:
+                    for i in range(0, len(r), max_size):
+                        final_result.append(r[i:i+max_size])
+                else:
+                    final_result.append(r)
+            
+            return [r for r in final_result if r]
+        
+        # === AGGREGAZIONE CHUNKS CON POSIZIONI ===
+        chunks = []  # Lista di (chunk_text, char_start, char_end)
+        current_chunk = []
+        current_len = 0
+        
+        for sentence in sentences:
+            sent_len = len(sentence)
+            
+            # Frase troppo lunga: applica fallback gerarchico
+            if sent_len > size:
+                # Prima salva il chunk corrente
+                if current_chunk:
+                    chunk_text = ' '.join(current_chunk)
+                    # Trova posizione nel testo originale
+                    start_pos = text.find(current_chunk[0])
+                    end_pos = text.find(current_chunk[-1]) + len(current_chunk[-1])
+                    chunks.append((chunk_text, start_pos, end_pos))
+                    current_chunk = []
+                    current_len = 0
+                
+                # Split gerarchico della frase lunga
+                sub_parts = split_long_segment(sentence, size)
+                for part in sub_parts:
+                    start_pos = text.find(part)
+                    end_pos = start_pos + len(part) if start_pos >= 0 else -1
+                    chunks.append((part, start_pos, end_pos))
+                continue
+            
+            # Se aggiungere la frase supera size, chiudi chunk
+            if current_len + sent_len + 1 > size and current_chunk:
+                chunk_text = ' '.join(current_chunk)
+                start_pos = text.find(current_chunk[0])
+                end_pos = text.find(current_chunk[-1]) + len(current_chunk[-1])
+                chunks.append((chunk_text, start_pos, end_pos))
+                
+                # Overlap semantico: mantieni ultime frasi che rientrano in 'overlap'
+                overlap_chunk = []
+                overlap_len = 0
+                for s in reversed(current_chunk):
+                    if overlap_len + len(s) + 1 <= overlap:
+                        overlap_chunk.insert(0, s)
+                        overlap_len += len(s) + 1
+                    else:
+                        break
+                
+                current_chunk = overlap_chunk
+                current_len = overlap_len
+            
+            current_chunk.append(sentence)
+            current_len += sent_len + 1
+        
+        # Ultimo chunk
+        if current_chunk:
+            chunk_text = ' '.join(current_chunk)
+            start_pos = text.find(current_chunk[0])
+            end_pos = text.find(current_chunk[-1]) + len(current_chunk[-1])
+            chunks.append((chunk_text, start_pos, end_pos))
+        
         return chunks
 
     def _ingest(self, path):
@@ -91,7 +268,14 @@ class Ingester:
         if path.suffix.lower() not in self.all_extensions:
             return 0, f"Formato non supportato: {path.suffix}"
         
-        self._delete_vectors(path.name)
+        # Calcola source_path subito per usarlo in delete e payload
+        try:
+            source_path = str(path.relative_to(self.docs_path))
+        except ValueError:
+            source_path = path.name
+        
+        # Elimina vecchi vettori di questo file (se esistono)
+        self._delete_vectors(source_path)
         
         text, err = extract_text(path, self.config)
         if err:
@@ -100,15 +284,18 @@ class Ingester:
         if not text or len(text) < self.min_text_length:
             return 0, "File troppo corto"
         
-        chunks = self._chunk_text(text)
+        chunks = self._chunk_text(text)  # Lista di (text, start, end)
         if not chunks:
             return 0, "Nessun chunk generato"
+        
+        # Estrai solo i testi per l'embedding
+        chunk_texts = [c[0] for c in chunks]
         
         try:
             encode_kwargs = {"show_progress_bar": False}
             if self.embedding_task:
                 encode_kwargs["task"] = self.embedding_task
-            raw_embeddings = self.model.encode(chunks, **encode_kwargs)
+            raw_embeddings = self.model.encode(chunk_texts, **encode_kwargs)
             
             vectors = []
             for emb in raw_embeddings:
@@ -123,13 +310,23 @@ class Ingester:
             return 0, f"Mismatch: {len(chunks)} chunks vs {len(vectors)} vectors"
         
         points = []
-        for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        for i, (chunk_data, vector) in enumerate(zip(chunks, vectors)):
             if len(vector) != self.embedding_dim:
                 continue
+            
+            chunk_text, char_start, char_end = chunk_data
+            
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
                 vector=vector,
-                payload={'text': chunk, 'source': path.name, 'chunk_id': i}
+                payload={
+                    'text': chunk_text,
+                    'source': path.name,
+                    'source_path': source_path,
+                    'chunk_id': i,
+                    'char_start': char_start,
+                    'char_end': char_end
+                }
             ))
         
         if not points:
@@ -183,7 +380,7 @@ class Ingester:
             if deleted:
                 task = prog.add_task("[red]Eliminazione...", total=len(deleted))
                 for key in deleted:
-                    self._delete_vectors(Path(key).name)
+                    self._delete_vectors(key)  # key è source_path completo
                     del self.registry[key]
                     self.stats['deleted'] += 1
                     prog.advance(task)
