@@ -258,6 +258,53 @@ Mostra statistiche del server (query totali, success rate, uptime, ecc.)
 
 ---
 
+## Setup Claude Code (via HTTP - Raccomandato)
+
+⚠️ **Importante per Claude Code**: Il caricamento del modello AI richiede 1-2 minuti. Claude Code ha un timeout di avvio che può causare errori. La soluzione è usare il server in modalità HTTP (SSE).
+
+### Perché HTTP?
+
+| Modalità | Pro | Contro |
+|----------|-----|--------|
+| **STDIO** (default) | Setup semplice | Timeout al primo avvio se il modello non è in cache |
+| **HTTP (SSE)** | Nessun timeout, modello pre-caricato | Richiede di avviare il server separatamente |
+
+### Setup HTTP
+
+**Step 1**: Avvia il server in un terminale separato (una volta sola):
+
+```powershell
+cd C:\path\to\file-search
+.\.venv\Scripts\Activate.ps1
+python mcp_server_http.py
+```
+
+Attendi fino a vedere:
+```
+[MCP HTTP] Server SSE in ascolto su http://127.0.0.1:8765/sse
+[MCP HTTP] Configura il client con URL: http://127.0.0.1:8765/sse
+```
+
+**Step 2**: Configura Claude Code per usare HTTP:
+
+**File (Mac/Linux)**: `~/.claude/mcp.json`  
+**File (Windows)**: `%USERPROFILE%\.claude\mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "rag-search": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8765/sse"
+    }
+  }
+}
+```
+
+**Step 3**: Riavvia Claude Code. I tool RAG saranno disponibili immediatamente senza timeout.
+
+---
+
 ## Chatbot Interattivo (Opzionale)
 
 Sistema di chat interattivo con RAG usando Google Gemini:

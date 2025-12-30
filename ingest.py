@@ -327,6 +327,10 @@ class Ingester:
 
     def _ingest(self, path):
         """Processa un singolo file"""
+        import time as _time
+        _t0 = _time.time()
+        console.print(f"[dim]  → Inizio: {path.name}[/dim]")
+        
         if path.suffix.lower() not in self.all_extensions:
             return 0, f"Formato non supportato: {path.suffix}"
         
@@ -339,25 +343,33 @@ class Ingester:
         # Elimina vecchi vettori di questo file (se esistono)
         self._delete_vectors(source_path)
         
+        console.print(f"[dim]    [1/4] Estrazione testo...[/dim]")
         text, err = extract_text(path, self.config)
         if err:
             return 0, f"Errore estrazione: {err}"
+        console.print(f"[dim]    ✓ Estratti {len(text):,} caratteri ({_time.time()-_t0:.1f}s)[/dim]")
         
         if not text or len(text) < self.min_text_length:
             return 0, "File troppo corto"
         
+        console.print(f"[dim]    [2/4] Chunking...[/dim]")
+        _t1 = _time.time()
         chunks = self._chunk_text(text)  # Lista di (text, start, end)
         if not chunks:
             return 0, "Nessun chunk generato"
+        console.print(f"[dim]    ✓ Generati {len(chunks)} chunks ({_time.time()-_t1:.1f}s)[/dim]")
         
         # Estrai solo i testi per l'embedding
         chunk_texts = [c[0] for c in chunks]
         
         try:
+            console.print(f"[dim]    [3/4] Embedding {len(chunk_texts)} chunks...[/dim]")
+            _t2 = _time.time()
             encode_kwargs = {"show_progress_bar": False}
             if self.embedding_task:
                 encode_kwargs["task"] = self.embedding_task
             raw_embeddings = self.model.encode(chunk_texts, **encode_kwargs)
+            console.print(f"[dim]    ✓ Embedding completato ({_time.time()-_t2:.1f}s)[/dim]")
             
             vectors = []
             for emb in raw_embeddings:
@@ -399,10 +411,14 @@ class Ingester:
             return 0, "Nessun punto valido"
         
         try:
+            console.print(f"[dim]    [4/4] Upsert {len(points)} punti in Qdrant...[/dim]")
+            _t3 = _time.time()
             self.qdrant.upsert(self.collection_name, points)
+            console.print(f"[dim]    ✓ Upsert completato ({_time.time()-_t3:.1f}s)[/dim]")
         except Exception as e:
             return 0, f"Errore upsert: {e}"
         
+        console.print(f"[green]  ✓ {path.name}: {len(points)} chunks in {_time.time()-_t0:.1f}s[/green]")
         return len(points), None
 
     def run(self, clean=False):
