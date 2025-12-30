@@ -340,16 +340,7 @@ def _deduplicate_results(results, get_score_fn, threshold=0.85):
 
 @mcp.tool()
 def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
-    """
-    Cerca nei documenti indicizzati tramite ricerca semantica vettoriale.
-
-    Args:
-        query: Testo della domanda o ricerca (3-2000 caratteri)
-        limit: Numero massimo di risultati (1-50, default: 10)
-
-    Returns:
-        Risultati formattati con score di similarità e fonte
-    """
+    """Semantic search in indexed documents. Returns results with score, source path, and char position for citation."""
     start_time = time.time()
     METRICS["total_queries"] += 1
 
@@ -502,59 +493,32 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
                 f"< threshold: {effective_threshold:.3f})"
             )
             return (
-                f"ℹ️ Trovati {len(results.points)} risultati ma tutti sotto la soglia "
-                f"di qualità ({effective_threshold:.2f}).\n\n"
-                f"Miglior match: {get_score(results.points[0]):.3f} - "
-                f"Prova a riformulare la query in modo più specifico."
+                f"0 risultati sopra soglia {effective_threshold:.2f}. "
+                f"Max score: {get_score(results.points[0]):.3f}. Riformula query."
             )
 
-        # === 5. FORMATTAZIONE RISULTATI ===
-        threshold_info = f"{effective_threshold:.2f}"
-        if ADAPTIVE_THRESHOLD_ENABLED:
-            threshold_info += " (adattivo)"
-        
-        output = [
-            f"✅ Trovati {len(filtered_results)} risultati rilevanti "
-            f"(soglia qualità: {threshold_info}):\n"
-        ]
+        # === 5. FORMATTAZIONE RISULTATI (compatta ma esplicativa) ===
+        output = [f"Trovati {len(filtered_results)} risultati (soglia:{effective_threshold:.2f})"]
 
         for idx, result in enumerate(filtered_results, 1):
-            source = result.payload.get('source', 'Fonte sconosciuta')
-            source_path = result.payload.get('source_path', source)
+            source_path = result.payload.get('source_path', result.payload.get('source', '?'))
             text = result.payload.get('text', '').strip()
             chunk_id = result.payload.get('chunk_id', '?')
             char_start = result.payload.get('char_start', -1)
             char_end = result.payload.get('char_end', -1)
-            
-            # Usa lo score appropriato (rerank se disponibile)
             score = get_score(result)
-
-            # Indicatore qualità basato su score
-            if score >= 0.9:
-                quality = "🟢 Eccellente"
-            elif score >= 0.8:
-                quality = "🟡 Buona"
-            else:
-                quality = "🟠 Sufficiente"
             
-            # Formatta posizione e citazione se disponibile
-            if char_start >= 0 and char_end >= 0:
-                position_info = f"📍 Posizione: caratteri {char_start}-{char_end}\n"
-                citation = f"📝 Citazione: \"{source_path}\", char. {char_start}-{char_end}"
+            # Citazione esplicita
+            if char_start >= 0:
+                cite = f"char:{char_start}-{char_end}"
             else:
-                position_info = ""
-                citation = f"📝 Citazione: \"{source_path}\", chunk {chunk_id}"
+                cite = f"chunk:{chunk_id}"
 
             output.append(
-                f"[Risultato {idx}/{len(filtered_results)}]\n"
-                f"📄 Fonte: {source_path} (chunk {chunk_id})\n"
-                f"{position_info}"
-                f"🎯 Rilevanza: {score:.3f} {quality}\n"
-                f"{citation}\n\n"
-                f"{text}\n"
+                f"\n[{idx}] score:{score:.3f} src:{source_path} ({cite})\n{text}"
             )
 
-        formatted_output = "\n---\n\n".join(output)
+        formatted_output = "\n".join(output)
 
         # === 6. METRICHE ===
         elapsed = time.time() - start_time
@@ -584,10 +548,7 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
 
 @mcp.tool()
 def get_server_stats() -> str:
-    """
-    Restituisce statistiche e metriche del server RAG.
-    Utile per monitoring e debugging in ambienti di produzione.
-    """
+    """Returns server stats: document count, query metrics, errors."""
     try:
         # Info collection
         collection_info = QDRANT.get_collection(COLLECTION_NAME)
@@ -598,56 +559,33 @@ def get_server_stats() -> str:
             if METRICS["total_queries"] > 0 else 0
         )
 
-        stats = f"""
-📊 === STATISTICHE SERVER RAG ===
-
-🔧 Configurazione:
-  • Collection: {COLLECTION_NAME}
-  • Documenti indicizzati: {collection_info.points_count}
-  • Dimensione embedding: {collection_info.config.params.vectors.size}
-  • Similarity threshold: {SIMILARITY_THRESHOLD}
-  • Uptime: {uptime}
-
-📈 Metriche Query:
-  • Totale query: {METRICS["total_queries"]}
-  • Successi: {METRICS["successful_queries"]} ({success_rate:.1f}%)
-  • Fallimenti: {METRICS["failed_queries"]}
-  • Query bassa qualità: {METRICS["low_quality_queries"]}
-  • Risultati totali: {METRICS["total_results_returned"]}
-  • Tempo medio: {METRICS["avg_query_time"]:.2f}s
-
-⚠️ Ultimo errore: {METRICS["last_error"] or "Nessuno"}
-
-🕐 Timestamp: {datetime.now().isoformat()}
-        """
+        stats = (
+            f"CONFIG: documents={collection_info.points_count} embedding_dim={collection_info.config.params.vectors.size} "
+            f"threshold={SIMILARITY_THRESHOLD} uptime={uptime}\n"
+            f"METRICS: total_queries={METRICS['total_queries']} success={METRICS['successful_queries']}({success_rate:.0f}%) "
+            f"failed={METRICS['failed_queries']} low_quality={METRICS['low_quality_queries']} "
+            f"avg_time={METRICS['avg_query_time']:.2f}s\n"
+            f"LAST_ERROR: {METRICS['last_error'] or 'None'}"
+        )
 
         logger.info("Statistiche richieste")
         return stats.strip()
 
     except Exception as e:
         logger.error(f"Errore recupero statistiche: {e}")
-        return f"❌ Errore recupero statistiche: {e}"
+        return f"Err: {e}"
 
 
 
 @mcp.tool()
 def list_collections() -> str:
-    """
-    Mostra tutte le collezioni Qdrant disponibili con statistiche base.
-    """
+    """Lists all Qdrant collections with document counts."""
     try:
         collections = QDRANT.get_collections()
-        output = ["📚 === COLLEZIONI QDRANT ===\n"]
-        
+        output = ["COLLECTIONS:"]
         for col in collections.collections:
             info = QDRANT.get_collection(col.name)
-            output.append(
-                f"🔹 Nome: {col.name}\n"
-                f"   • Documenti (Points): {info.points_count}\n"
-                f"   • Stato: {info.status.name}\n"
-                f"   • Indicizzato: {info.indexed_vectors_count}\n"
-            )
-            
+            output.append(f"  {col.name}: {info.points_count} docs, {info.status.name}")
         return "\n".join(output)
     except Exception as e:
         logger.error(f"Errore list_collections: {e}")
@@ -656,10 +594,7 @@ def list_collections() -> str:
 
 @mcp.tool()
 def get_document_by_id(doc_id: str) -> str:
-    """
-    Recupera un documento specifico (chunk) tramite il suo ID.
-    Usa l'ID del punto su Qdrant (spesso un UUID o int).
-    """
+    """Retrieves a specific chunk by its Qdrant ID. Returns source, chunk_id, char position, and content."""
     try:
         # Prova a convertire in int se necessario, Qdrant usa entrambi
         point_id = doc_id
@@ -678,13 +613,11 @@ def get_document_by_id(doc_id: str) -> str:
         r = results[0]
         payload = r.payload or {}
         
+        pos = f"char:{payload.get('char_start', '?')}-{payload.get('char_end', '?')}"
         return (
-            f"📄 === DOCUMENTO {r.id} ===\n\n"
-            f"Fonte: {payload.get('source', 'N/A')}\n"
-            f"Path: {payload.get('source_path', 'N/A')}\n"
-            f"Chunk ID: {payload.get('chunk_id', 'N/A')}\n"
-            f"Posizione: {payload.get('char_start', '?')}-{payload.get('char_end', '?')}\n"
-            f"\n-- Contenuto --\n{payload.get('text', '')}\n"
+            f"id:{r.id} src:{payload.get('source_path', payload.get('source', '?'))} "
+            f"chunk:{payload.get('chunk_id', '?')} {pos}\n"
+            f"content:\n{payload.get('text', '')}"
         )
     except Exception as e:
         logger.error(f"Errore get_document_by_id: {e}")
@@ -693,10 +626,7 @@ def get_document_by_id(doc_id: str) -> str:
 
 @mcp.tool()
 def list_sources() -> str:
-    """
-    Restituisce l'elenco delle fonti (file) indicizzate.
-    Data la natura di Qdrant, esegue una scansione limitata per dedurre le fonti.
-    """
+    """Lists all indexed source files in tree format."""
     try:
         # Scroll per trovare fonti uniche (limitato per performance)
         limit_points = 2000
@@ -717,14 +647,52 @@ def list_sources() -> str:
             elif 'source_path' in payload:
                 sources.add(payload['source_path'])
         
-        output = [f"📂 === FONTI INDICIZZATE (Scan parziale {len(points)} punti) ===\n"]
         if not sources:
-            output.append("ℹ️ Nessuna fonte trovata (collection vuota o payload mancante).")
-        else:
-            for s in sorted(sources):
-                output.append(f"• {s}")
+            return f"SOURCES: 0 files (scanned {len(points)} points)"
+        
+        # Costruisci struttura ad albero
+        tree = {}
+        for source in sources:
+            # Normalizza separatori path (Windows/Unix)
+            normalized = source.replace("\\", "/")
+            parts = normalized.split("/")
             
+            # Naviga/crea la struttura
+            current = tree
+            for i, part in enumerate(parts):
+                if i == len(parts) - 1:
+                    # È un file (foglia)
+                    if "__files__" not in current:
+                        current["__files__"] = []
+                    current["__files__"].append(part)
+                else:
+                    # È una directory
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+        
+        # Genera output (compatto: senza emoji)
+        output = [f"SOURCES ({len(sources)} files, scan:{len(points)})"]
+        
+        def render_tree(node, prefix="", is_root=True):
+            lines = []
+            dirs = sorted([k for k in node.keys() if k != "__files__"])
+            files = sorted(node.get("__files__", []))
+            items = [(d, True) for d in dirs] + [(f, False) for f in files]
+            for i, (name, is_dir) in enumerate(items):
+                is_last = (i == len(items) - 1)
+                conn = "" if is_root and i == 0 else ("└─" if is_last else "├─")
+                npfx = prefix + ("  " if is_last else "│ ") if not (is_root and i == 0) else ""
+                if is_dir:
+                    lines.append(f"{prefix}{conn}{name}/")
+                    lines.extend(render_tree(node[name], npfx, False))
+                else:
+                    lines.append(f"{prefix}{conn}{name}")
+            return lines
+        
+        output.extend(render_tree(tree))
         return "\n".join(output)
+        
     except Exception as e:
         logger.error(f"Errore list_sources: {e}")
         return f"❌ Errore: {e}"
@@ -732,14 +700,7 @@ def list_sources() -> str:
 
 @mcp.tool()
 def search_by_source(query: str, source_query: str, limit: int = 10) -> str:
-    """
-    Esegue una ricerca semantica limitata a una specifica fonte.
-    
-    Args:
-        query: La domanda o testo da cercare
-        source_query: Parte del nome del file o path fonte (es. "tesi", "report_2024")
-        limit: Numero risultati
-    """
+    """Semantic search filtered by source file name (substring match)."""
     try:
         # Encoding query
         vector = MODEL.encode(query, show_progress_bar=False).tolist()
@@ -776,44 +737,32 @@ def search_by_source(query: str, source_query: str, limit: int = 10) -> str:
         filtered = filtered[:limit]
         
         if not filtered:
-            return f"ℹ️ Nessun risultato trovato in fonti contenenti '{source_query}'."
+            return f"0 risultati in '{source_query}'."
             
-        # Formattazione semplificata
-        output = [f"🔍 Ricerca '{query}' in fonti: *{source_query}*\n"]
+        # Formattazione compatta ma esplicativa
+        output = [f"Risultati in fonte='{source_query}': {len(filtered)}"]
         for idx, r in enumerate(filtered, 1):
             payload = r.payload or {}
-            s_name = payload.get('source', '?')
             txt = payload.get('text', '').strip()
-            score = r.score
-            output.append(f"{idx}. [{score:.3f}] {s_name}: \"{txt[:200]}...\"")
-            
-        return "\n\n".join(output)
+            output.append(f"[{idx}] score:{r.score:.3f} src:{payload.get('source', '?')}\n{txt[:200]}...")
+        return "\n".join(output)
         
     except Exception as e:
         logger.error(f"Errore search_by_source: {e}")
-        return f"❌ Errore: {e}"
+        return f"Err: {e}"
 
 
 @mcp.tool()
 def multi_query_search(queries: str, limit: int = 5) -> str:
-    """
-    Esegue ricerche multiple e combina i risultati.
-    
-    Args:
-        queries: Stringa con query separate da punto e virgola ';' o newline
-        limit: Risultati per singola sub-query
-    """
+    """Runs multiple queries (separated by ';') and merges deduplicated results."""
     try:
         # Split queries
         q_list = [q.strip() for q in queries.replace('\n', ';').split(';') if q.strip()]
         
         if not q_list:
-            return "❌ Nessuna query valida fornita. Separa le query con ';' o newline."
+            return "Err: no queries. Use ';' or newline."
         
-        all_results = {} # Map id -> Point
-        
-        output = [f"🧠 Multi-Query Search ({len(q_list)} queries)\n"]
-        
+        all_results = {}
         for q in q_list:
             vector = MODEL.encode(q, show_progress_bar=False).tolist()
             hits = QDRANT.query_points(
@@ -822,39 +771,27 @@ def multi_query_search(queries: str, limit: int = 5) -> str:
                 limit=limit,
                 with_payload=True
             )
-            output.append(f"   ► Query: '{q}' -> {len(hits.points)} hits")
-            
             for p in hits.points:
                 if (p.payload or {}) and (p.id not in all_results or p.score > all_results[p.id].score):
                     all_results[p.id] = p
                     
-        # Sort combined
         final_points = sorted(all_results.values(), key=lambda x: x.score, reverse=True)[:limit*2]
         
-        output.append(f"\n✅ Risultati combinati unici: {len(final_points)}\n")
-        
+        output = [f"MultiQuery ({len(q_list)} queries): {len(final_points)} unique_results"]
         for idx, r in enumerate(final_points, 1):
             payload = r.payload or {}
-            src = payload.get('source', '?')
             txt = payload.get('text', '').strip()
-            output.append(f"{idx}. [{r.score:.3f}] {src}\n   \"{txt[:300]}...\"\n")
-            
+            output.append(f"[{idx}] score:{r.score:.3f} src:{payload.get('source', '?')}\n{txt[:250]}...")
         return "\n".join(output)
 
     except Exception as e:
         logger.error(f"Errore multi_query_search: {e}")
-        return f"❌ Errore: {e}"
+        return f"Err: {e}"
 
 
 @mcp.tool()
 def hybrid_search(query: str, limit: int = 10, keyword_boost: float = 0.2) -> str:
-    """
-    Ricerca 'ibrida' leggera: Vettoriale + Keyword Boost.
-    Premia i risultati vettoriali che contengono le parole esatte della query.
-    
-    Args:
-        keyword_boost: Quanto aumentare lo score se trovata keyword (default 0.2)
-    """
+    """Semantic search with keyword boost. Increases score if exact query words are found."""
     try:
         # 1. Ricerca vettoriale standard
         vector = MODEL.encode(query, show_progress_bar=False).tolist()
@@ -884,37 +821,23 @@ def hybrid_search(query: str, limit: int = 10, keyword_boost: float = 0.2) -> st
         top_results = hits.points[:limit]
         
         if not top_results:
-            return "ℹ️ Nessun risultato trovato."
+            return "0 results."
         
-        output = [f"⚡ Hybrid Search (Boost keyword: {keyword_boost})\n"]
+        output = [f"HybridSearch (keyword_boost:{keyword_boost}): {len(top_results)} results"]
         for idx, r in enumerate(top_results, 1):
             payload = r.payload or {}
-            src = payload.get('source', '')
             txt = payload.get('text', '').strip()
-            output.append(f"{idx}. [{r.score:.3f}] {src}\n   {txt[:250]}...\n")
-            
+            output.append(f"[{idx}] score:{r.score:.3f} src:{payload.get('source', '')}\n{txt[:200]}...")
         return "\n".join(output)
         
     except Exception as e:
         logger.error(f"Errore hybrid_search: {e}")
-        return f"❌ Errore: {e}"
+        return f"Err: {e}"
 
 
 @mcp.tool()
 def get_document_context(source_name: str, chunk_id: int, chunks_before: int = 2, chunks_after: int = 2) -> str:
-    """
-    Recupera un chunk specifico con contesto espanso (chunks adiacenti).
-    Utile quando un singolo chunk non fornisce abbastanza informazioni.
-    
-    Args:
-        source_name: Nome (o parte del nome) del file sorgente
-        chunk_id: ID del chunk centrale da cui partire
-        chunks_before: Quanti chunks precedenti includere (0-10, default: 2)
-        chunks_after: Quanti chunks successivi includere (0-10, default: 10)
-    
-    Returns:
-        Contenuto del chunk richiesto + chunks di contesto, ordinati per posizione
-    """
+    """Retrieves a chunk with surrounding context (adjacent chunks). Use when a single chunk lacks context."""
     try:
         # Validazione input
         chunks_before = max(0, min(10, chunks_before))
@@ -984,32 +907,16 @@ def get_document_context(source_name: str, chunk_id: int, chunks_before: int = 2
         
         context_chunks = matching_chunks[start_idx:end_idx]
         
-        # Formatta output
+        # Formatta output compatto ma esplicativo
         source_full = (matching_chunks[0].payload or {}).get('source_path', source_name)
-        output = [
-            f"📄 === CONTESTO DOCUMENTO ===\n",
-            f"📁 Fonte: {source_full}",
-            f"🎯 Chunk centrale: {chunk_id} (indice {target_idx})",
-            f"📊 Range: chunks {start_idx} → {end_idx-1} ({len(context_chunks)} chunks totali)",
-            f"{'='*50}\n"
-        ]
+        output = [f"Context src:{source_full} target_chunk:{chunk_id}(index:{target_idx}) range:{start_idx}-{end_idx-1} ({len(context_chunks)} chunks)"]
         
         for idx, p in enumerate(context_chunks):
             payload = p.payload or {}
-            p_chunk_id = payload.get('chunk_id', '?')
-            char_start = payload.get('char_start', '?')
-            char_end = payload.get('char_end', '?')
             text = payload.get('text', '').strip()
-            
-            # Evidenzia il chunk centrale
             is_target = (start_idx + idx) == target_idx
-            marker = ">>> " if is_target else "    "
-            highlight = " [CHUNK RICHIESTO]" if is_target else ""
-            
-            output.append(
-                f"{marker}[Chunk {p_chunk_id}] pos: {char_start}-{char_end}{highlight}\n"
-                f"{text}\n"
-            )
+            marker = "[TARGET]" if is_target else ""
+            output.append(f"chunk:{payload.get('chunk_id', '?')} char:{payload.get('char_start', '?')}-{payload.get('char_end', '?')} {marker}\n{text}")
         
         return "\n---\n".join(output)
         
