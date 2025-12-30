@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
 import time
+from functools import wraps
+import time as time_module
 
 # === FIX WINDOWS: Forza newline Unix per MCP ===
 if sys.platform == "win32":
@@ -271,6 +273,71 @@ except Exception as e:
 mcp = FastMCP("rag-search")
 
 
+# === Retry Decorator per Query Robuste ===
+def retry_on_failure(max_attempts=3, delay=1):
+    """Decorator per retry automatico su errori transitori"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_attempts:
+                        logger.warning(f"Query tentativo {attempt}/{max_attempts} fallito: {e}")
+                        time_module.sleep(delay)
+            raise last_error
+        return wrapper
+    return decorator
+
+
+@retry_on_failure(max_attempts=2, delay=0.5)
+def _execute_search(client, collection, vector, limit, timeout):
+    """Esegue ricerca Qdrant con retry automatico"""
+    return client.query_points(
+        collection_name=collection,
+        query=vector,
+        limit=limit,
+        with_payload=True,
+        timeout=timeout
+    )
+
+
+def _deduplicate_results(results, get_score_fn, threshold=0.85):
+    """
+    Rimuove risultati con testo quasi identico.
+    Mantiene quello con score migliore.
+    """
+    if len(results) <= 1:
+        return results
+    
+    def jaccard(t1, t2, n=3):
+        # N-gram Jaccard similarity
+        s1 = set(t1.lower()[i:i+n] for i in range(max(0, len(t1)-n+1)))
+        s2 = set(t2.lower()[i:i+n] for i in range(max(0, len(t2)-n+1)))
+        if not s1 or not s2:
+            return 0.0
+        return len(s1 & s2) / len(s1 | s2)
+    
+    # Ordina per score decrescente (highest quality first)
+    sorted_results = sorted(results, key=get_score_fn, reverse=True)
+    
+    unique = []
+    for candidate in sorted_results:
+        cand_text = candidate.payload.get('text', '')
+        # Se troppo simile a uno già preso, scartalo
+        is_dup = any(
+            jaccard(cand_text, acc.payload.get('text', '')) >= threshold
+            for acc in unique
+        )
+        if not is_dup:
+            unique.append(candidate)
+    
+    return unique
+
+
 @mcp.tool()
 def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
     """
@@ -319,19 +386,16 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
             logger.error(f"Errore encoding: {e}", exc_info=True)
             return f"❌ Errore durante encoding della query: {e}"
 
-        # === 3. RICERCA VETTORIALE ===
+        # === 3. RICERCA VETTORIALE (con retry automatico) ===
         try:
             logger.debug(f"Ricerca in Qdrant (collection: {COLLECTION_NAME})...")
             
             # Se reranking attivo, recupera più candidati
             search_limit = RERANK_TOP_N if RERANK_ENABLED and RERANK_MODEL else limit
 
-            results = QDRANT.query_points(
-                collection_name=COLLECTION_NAME,
-                query=vector,
-                limit=search_limit,
-                with_payload=True,
-                timeout=QDRANT_TIMEOUT
+            # Usa wrapper con retry per robustezza
+            results = _execute_search(
+                QDRANT, COLLECTION_NAME, vector, search_limit, QDRANT_TIMEOUT
             )
 
         except Exception as e:
@@ -421,21 +485,26 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
             effective_threshold = SIMILARITY_THRESHOLD
 
         # Filtra usando lo score appropriato (rerank o vettoriale)
+
+        # Filtra usando lo score appropriato (rerank o vettoriale)
         filtered_results = [
             r for r in results.points
             if get_score(r) >= effective_threshold
         ]
+        
+        # Deduplicazione semantica (rimuove chunk quasi identici)
+        filtered_results = _deduplicate_results(filtered_results, get_score)
 
         if not filtered_results:
             METRICS["low_quality_queries"] += 1
             logger.info(
-                f"Risultati filtrati (max score: {results.points[0].score:.3f} "
+                f"Risultati filtrati (max score: {get_score(results.points[0]):.3f} "
                 f"< threshold: {effective_threshold:.3f})"
             )
             return (
                 f"ℹ️ Trovati {len(results.points)} risultati ma tutti sotto la soglia "
                 f"di qualità ({effective_threshold:.2f}).\n\n"
-                f"Miglior match: {results.points[0].score:.3f} - "
+                f"Miglior match: {get_score(results.points[0]):.3f} - "
                 f"Prova a riformulare la query in modo più specifico."
             )
 
@@ -500,7 +569,7 @@ def search_knowledge_base(query: str, limit: int = DEFAULT_LIMIT) -> str:
 
         logger.info(
             f"Query completata: {len(filtered_results)} risultati in {elapsed:.2f}s "
-            f"(score range: {filtered_results[0].score:.3f} - {filtered_results[-1].score:.3f})"
+            f"(score range: {get_score(filtered_results[0]):.3f} - {get_score(filtered_results[-1]):.3f})"
         )
 
         return formatted_output
@@ -558,6 +627,277 @@ def get_server_stats() -> str:
     except Exception as e:
         logger.error(f"Errore recupero statistiche: {e}")
         return f"❌ Errore recupero statistiche: {e}"
+
+
+
+@mcp.tool()
+def list_collections() -> str:
+    """
+    Mostra tutte le collezioni Qdrant disponibili con statistiche base.
+    """
+    try:
+        collections = QDRANT.get_collections()
+        output = ["📚 === COLLEZIONI QDRANT ===\n"]
+        
+        for col in collections.collections:
+            info = QDRANT.get_collection(col.name)
+            output.append(
+                f"🔹 Nome: {col.name}\n"
+                f"   • Documenti (Points): {info.points_count}\n"
+                f"   • Stato: {info.status.name}\n"
+                f"   • Indicizzato: {info.indexed_vectors_count}\n"
+            )
+            
+        return "\n".join(output)
+    except Exception as e:
+        logger.error(f"Errore list_collections: {e}")
+        return f"❌ Errore: {e}"
+
+
+@mcp.tool()
+def get_document_by_id(doc_id: str) -> str:
+    """
+    Recupera un documento specifico (chunk) tramite il suo ID.
+    Usa l'ID del punto su Qdrant (spesso un UUID o int).
+    """
+    try:
+        # Prova a convertire in int se necessario, Qdrant usa entrambi
+        point_id = doc_id
+        if doc_id.isdigit():
+            point_id = int(doc_id)
+
+        results = QDRANT.retrieve(
+            collection_name=COLLECTION_NAME,
+            ids=[point_id],
+            with_payload=True
+        )
+
+        if not results:
+            return f"❌ Nessun documento trovato con ID: {doc_id}"
+
+        r = results[0]
+        payload = r.payload or {}
+        
+        return (
+            f"📄 === DOCUMENTO {r.id} ===\n\n"
+            f"Fonte: {payload.get('source', 'N/A')}\n"
+            f"Path: {payload.get('source_path', 'N/A')}\n"
+            f"Chunk ID: {payload.get('chunk_id', 'N/A')}\n"
+            f"Posizione: {payload.get('char_start', '?')}-{payload.get('char_end', '?')}\n"
+            f"\n-- Contenuto --\n{payload.get('text', '')}\n"
+        )
+    except Exception as e:
+        logger.error(f"Errore get_document_by_id: {e}")
+        return f"❌ Errore: {e}"
+
+
+@mcp.tool()
+def list_sources() -> str:
+    """
+    Restituisce l'elenco delle fonti (file) indicizzate.
+    Data la natura di Qdrant, esegue una scansione limitata per dedurre le fonti.
+    """
+    try:
+        # Scroll per trovare fonti uniche (limitato per performance)
+        limit_points = 2000
+        sources = set()
+        
+        # Usa scroll API
+        points, _ = QDRANT.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=limit_points,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        for p in points:
+            payload = p.payload or {}
+            if 'source' in payload:
+                sources.add(payload['source'])
+            elif 'source_path' in payload:
+                sources.add(payload['source_path'])
+        
+        output = [f"📂 === FONTI INDICIZZATE (Scan parziale {len(points)} punti) ===\n"]
+        if not sources:
+            output.append("ℹ️ Nessuna fonte trovata (collection vuota o payload mancante).")
+        else:
+            for s in sorted(sources):
+                output.append(f"• {s}")
+            
+        return "\n".join(output)
+    except Exception as e:
+        logger.error(f"Errore list_sources: {e}")
+        return f"❌ Errore: {e}"
+
+
+@mcp.tool()
+def search_by_source(query: str, source_query: str, limit: int = 10) -> str:
+    """
+    Esegue una ricerca semantica limitata a una specifica fonte.
+    
+    Args:
+        query: La domanda o testo da cercare
+        source_query: Parte del nome del file o path fonte (es. "tesi", "report_2024")
+        limit: Numero risultati
+    """
+    try:
+        # Encoding query
+        vector = MODEL.encode(query, show_progress_bar=False).tolist()
+        
+        # Crea filtro Qdrant
+        # Cerchiamo substring nel campo 'source' o 'source_path'
+        # Nota: Qdrant 'match' è exact, 'like' o 'text' dipende dalla config schema.
+        # Per sicurezza, visto che non sappiamo lo schema, usiamo MatchValue su 
+        # scroll e filtro client-side SE la collection non ha full-text index su payload.
+        # TUTTAVIA: per efficienza proviamo un filtro MatchText/MatchValue se possibile
+        # ma Qdrant base senza config JSON specifica potrebbe fallire su 'MatchText'.
+        # Approccio ibrido chirurgico: recupero più risultati e filtro in python.
+        
+        search_limit = limit * 5  # Prendi di più per filtrare dopo
+        
+        hit = QDRANT.query_points(
+            collection_name=COLLECTION_NAME,
+            query=vector,
+            limit=search_limit,
+            with_payload=True
+        )
+        
+        filtered = []
+        source_q_lower = source_query.lower()
+        
+        for point in hit.points:
+            payload = point.payload or {}
+            p_source = payload.get('source', '').lower()
+            p_path = payload.get('source_path', '').lower()
+            
+            if source_q_lower in p_source or source_q_lower in p_path:
+                filtered.append(point)
+                
+        filtered = filtered[:limit]
+        
+        if not filtered:
+            return f"ℹ️ Nessun risultato trovato in fonti contenenti '{source_query}'."
+            
+        # Formattazione semplificata
+        output = [f"🔍 Ricerca '{query}' in fonti: *{source_query}*\n"]
+        for idx, r in enumerate(filtered, 1):
+            payload = r.payload or {}
+            s_name = payload.get('source', '?')
+            txt = payload.get('text', '').strip()
+            score = r.score
+            output.append(f"{idx}. [{score:.3f}] {s_name}: \"{txt[:200]}...\"")
+            
+        return "\n\n".join(output)
+        
+    except Exception as e:
+        logger.error(f"Errore search_by_source: {e}")
+        return f"❌ Errore: {e}"
+
+
+@mcp.tool()
+def multi_query_search(queries: str, limit: int = 5) -> str:
+    """
+    Esegue ricerche multiple e combina i risultati.
+    
+    Args:
+        queries: Stringa con query separate da punto e virgola ';' o newline
+        limit: Risultati per singola sub-query
+    """
+    try:
+        # Split queries
+        q_list = [q.strip() for q in queries.replace('\n', ';').split(';') if q.strip()]
+        
+        if not q_list:
+            return "❌ Nessuna query valida fornita. Separa le query con ';' o newline."
+        
+        all_results = {} # Map id -> Point
+        
+        output = [f"🧠 Multi-Query Search ({len(q_list)} queries)\n"]
+        
+        for q in q_list:
+            vector = MODEL.encode(q, show_progress_bar=False).tolist()
+            hits = QDRANT.query_points(
+                collection_name=COLLECTION_NAME,
+                query=vector,
+                limit=limit,
+                with_payload=True
+            )
+            output.append(f"   ► Query: '{q}' -> {len(hits.points)} hits")
+            
+            for p in hits.points:
+                if (p.payload or {}) and (p.id not in all_results or p.score > all_results[p.id].score):
+                    all_results[p.id] = p
+                    
+        # Sort combined
+        final_points = sorted(all_results.values(), key=lambda x: x.score, reverse=True)[:limit*2]
+        
+        output.append(f"\n✅ Risultati combinati unici: {len(final_points)}\n")
+        
+        for idx, r in enumerate(final_points, 1):
+            payload = r.payload or {}
+            src = payload.get('source', '?')
+            txt = payload.get('text', '').strip()
+            output.append(f"{idx}. [{r.score:.3f}] {src}\n   \"{txt[:300]}...\"\n")
+            
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Errore multi_query_search: {e}")
+        return f"❌ Errore: {e}"
+
+
+@mcp.tool()
+def hybrid_search(query: str, limit: int = 10, keyword_boost: float = 0.2) -> str:
+    """
+    Ricerca 'ibrida' leggera: Vettoriale + Keyword Boost.
+    Premia i risultati vettoriali che contengono le parole esatte della query.
+    
+    Args:
+        keyword_boost: Quanto aumentare lo score se trovata keyword (default 0.2)
+    """
+    try:
+        # 1. Ricerca vettoriale standard
+        vector = MODEL.encode(query, show_progress_bar=False).tolist()
+        
+        # Chiediamo più risultati per riordinarli
+        hits = QDRANT.query_points(
+            collection_name=COLLECTION_NAME,
+            query=vector,
+            limit=limit * 3,
+            with_payload=True
+        )
+        
+        # 2. Reranking basato su keyword (minimo 2 caratteri per evitare rumore)
+        keywords = [w.lower() for w in query.split() if len(w) > 2]
+        
+        for p in hits.points:
+            payload = p.payload or {}
+            txt = payload.get('text', '').lower()
+            matches = sum(1 for k in keywords if k in txt)
+            if matches > 0:
+                # Boost logaritmico base
+                boost = keyword_boost * matches
+                p.score += boost
+                
+        # 3. Riordina
+        hits.points.sort(key=lambda x: x.score, reverse=True)
+        top_results = hits.points[:limit]
+        
+        if not top_results:
+            return "ℹ️ Nessun risultato trovato."
+        
+        output = [f"⚡ Hybrid Search (Boost keyword: {keyword_boost})\n"]
+        for idx, r in enumerate(top_results, 1):
+            payload = r.payload or {}
+            src = payload.get('source', '')
+            txt = payload.get('text', '').strip()
+            output.append(f"{idx}. [{r.score:.3f}] {src}\n   {txt[:250]}...\n")
+            
+        return "\n".join(output)
+        
+    except Exception as e:
+        logger.error(f"Errore hybrid_search: {e}")
+        return f"❌ Errore: {e}"
 
 
 # === Entry point ===

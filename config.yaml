@@ -47,7 +47,10 @@ max_tokens: 2048
 whisper_model: "turbo"
 
 # ===== PDF EXTRACTION =====
-pdf_extraction_mode: "markdown" # "markdown" (tabelle/struttura) o "text" (legacy)
+# "layout" = analisi avanzata (blocchi, colonne, tabelle con bbox)
+# "markdown" = pymupdf4llm (tabelle/struttura)
+# "text" = solo testo lineare (legacy)
+pdf_extraction_mode: "layout"
 
 # ===== PROCESSING =====
 hash_buffer_size: 8192

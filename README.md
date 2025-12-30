@@ -63,7 +63,26 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 3. Configurazione
+### 3. Pre-caricamento Modelli AI (Importante!)
+
+⚠️ **Prima di usare il server MCP con un IDE**, è necessario pre-scaricare i modelli AI. Altrimenti l'IDE andrà in timeout durante il primo avvio.
+
+```bash
+# Esegui una volta per scaricare e cachare i modelli
+python mcp_server.py
+```
+
+Attendi fino a vedere:
+```
+[MCP] Caricamento modello AI e connessione Qdrant...
+[MCP] Sistema pronto.
+```
+
+Poi premi `Ctrl+C` per terminare. I modelli saranno salvati nella cache di HuggingFace (`~/.cache/huggingface/`) e i successivi avvii saranno molto più veloci.
+
+**Nota**: Il primo download richiede ~5-10 minuti (modello ~1-2GB). Le esecuzioni successive caricano dalla cache in ~30-60 secondi.
+
+### 4. Configurazione
 
 Crea file `.env` con le tue API keys (opzionale, solo per chat.py):
 
@@ -457,6 +476,60 @@ pip install -r requirements.txt
 1. Verifica path in `claude_desktop_config.json`
 2. Riavvia Claude Desktop
 3. Verifica che Qdrant sia attivo
+
+### Problema: "Timeout" o "Modello non caricato" all'avvio MCP
+
+**Causa**: Gli IDE (Antigravity, Claude Desktop, VS Code) hanno un timeout per l'avvio del server MCP. Il caricamento dei modelli AI (Jina Embeddings v3 + Cross-Encoder) può richiedere 1-2 minuti alla prima esecuzione, superando questo timeout.
+
+**Sintomi**:
+- L'IDE mostra errore di timeout o connessione fallita
+- Il server MCP non compare tra i tool disponibili
+- Messaggi tipo "failed to load model" o "connection closed"
+
+**Soluzione**: Pre-caricare i modelli **una volta** eseguendo il server manualmente:
+
+```bash
+cd c:\path\to\file-search
+.\.venv\Scripts\Activate.ps1  # Windows
+# source .venv/bin/activate   # Linux/Mac
+
+python mcp_server.py
+```
+
+Attendi fino a vedere `[MCP] Sistema pronto.`, poi chiudi con `Ctrl+C`.
+
+I modelli vengono salvati nella cache HuggingFace (`~/.cache/huggingface/`). Le esecuzioni successive saranno più veloci (~30-60s invece di minuti).
+
+**Soluzioni alternative**:
+
+1. **Disabilita reranking** per dimezzare il tempo di avvio:
+   ```yaml
+   # config.yaml
+   rerank_enabled: false
+   ```
+
+2. **Usa un modello più leggero** (meno preciso ma più veloce):
+   ```yaml
+   # config.yaml
+   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+   embedding_dimension: 384
+   trust_remote_code: false
+   ```
+   Poi rigenera: `python ingest.py --clean`
+
+3. **Aumenta il timeout dell'IDE** (se supportato), es. per Antigravity:
+   ```json
+   {
+     "mcpServers": {
+       "rag-search": {
+         "command": "...",
+         "args": ["..."],
+         "timeout": 120000,
+         "startupTimeout": 120000
+       }
+     }
+   }
+   ```
 
 ---
 

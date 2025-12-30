@@ -12,17 +12,62 @@ def extract_pdf_text(file_path: Path, mode: str = "markdown") -> str:
     
     Args:
         file_path: Path del PDF
-        mode: "markdown" (strutturato con tabelle) o "text" (legacy)
+        mode: "layout" (analisi avanzata), "markdown" (tabelle) o "text" (legacy)
         
     Returns:
-        Testo estratto (Markdown se mode="markdown")
+        Testo estratto (Markdown strutturato)
         
-    Features (mode="markdown"):
-        - Tabelle convertite in formato Markdown
-        - Headers preservati (# ## ###)
-        - Liste formattate (- item)
-        - Struttura colonne gestita
+    Modes:
+        - "layout": Analisi avanzata con pymupdf_layout (blocchi, colonne, tabelle)
+        - "markdown": pymupdf4llm (tabelle, headers, liste)
+        - "text": PyMuPDF base (solo testo lineare)
     """
+    
+    # === MODE: LAYOUT (analisi avanzata) ===
+    if mode == "layout":
+        try:
+            import fitz
+            from pymupdf_layout import LayoutAnalyzer
+            
+            doc = fitz.open(file_path)
+            analyzer = LayoutAnalyzer()
+            
+            all_text = []
+            for page_num, page in enumerate(doc, 1):
+                # Analizza il layout della pagina
+                layout = analyzer.analyze(page)
+                
+                page_parts = []
+                for block in layout:
+                    block_type = getattr(block, 'type', 'paragraph')
+                    text = getattr(block, 'text', str(block)).strip()
+                    
+                    if not text:
+                        continue
+                    
+                    # Formatta in base al tipo di blocco
+                    if block_type == 'header':
+                        page_parts.append(f"## {text}")
+                    elif block_type == 'table':
+                        page_parts.append(f"\n{text}\n")
+                    else:
+                        page_parts.append(text)
+                
+                if page_parts:
+                    all_text.append(f"<!-- Page {page_num} -->\n" + "\n\n".join(page_parts))
+            
+            doc.close()
+            return "\n\n---\n\n".join(all_text).strip()
+            
+        except ImportError as e:
+            logger.warning(f"pymupdf_layout import error: {e}")
+            logger.warning("pymupdf_layout non installato o fallito, fallback a pymupdf4llm")
+            mode = "markdown"  # Fallback
+        except Exception as e:
+            logger.warning(f"pymupdf_layout fallito ({e}), fallback a pymupdf4llm")
+            mode = "markdown"  # Fallback
+    
+    # === MODE: MARKDOWN (pymupdf4llm) ===
     if mode == "markdown":
         try:
             import pymupdf4llm
@@ -34,7 +79,7 @@ def extract_pdf_text(file_path: Path, mode: str = "markdown") -> str:
         except Exception as e:
             logger.warning(f"pymupdf4llm fallito ({e}), fallback a PyMuPDF base")
     
-    # Fallback: estrazione base con PyMuPDF
+    # === FALLBACK: estrazione base con PyMuPDF ===
     import fitz
     text_parts = []
     with fitz.open(file_path) as doc:

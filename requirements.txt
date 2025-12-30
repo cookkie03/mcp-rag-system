@@ -17,6 +17,7 @@ accelerate>=0.26.0
 # PDF Extraction
 pymupdf>=1.24.0
 pymupdf4llm>=0.0.17
+pymupdf_layout>=0.1.0
 
 # Audio Transcription (richiede FFmpeg)
 openai-whisper>=20240927

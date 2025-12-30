@@ -17,6 +17,16 @@ from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, Fi
 from utils import load_config, load_environment, ensure_directory, get_supported_extensions
 from extractors import extract_text
 
+def _map_protected_to_original(pos: int, protected: str, dot_placeholder: str) -> int:
+    """
+    Converte posizione da testo protetto a testo originale.
+    Compensa la differenza di lunghezza introdotta dai placeholder.
+    """
+    # Conta placeholder prima della posizione
+    count = protected[:pos].count(dot_placeholder)
+    # Compensa: ogni DOT aggiunge (len(DOT) - 1) caratteri extra
+    return pos - count * (len(dot_placeholder) - 1)
+
 console = Console()
 
 # Directory per il registry locale (traccia file già indicizzati)
@@ -138,6 +148,20 @@ class Ingester:
         
         # 7. Proteggi acronimi con punti (U.S.A., Ph.D., M.Sc.)
         protected = re.sub(r'\b([A-Z]\.){2,}', lambda m: m.group(0).replace('.', DOT), protected)
+
+        # 8. Proteggi riferimenti bibliografici (Smith et al. 2023)
+        protected = re.sub(r'(\d{4})\.\s*(?=[A-Z])', rf'\1{DOT} ', protected)
+
+        # 9. Proteggi intervalli numerici (pp. 10-20, vol. 5)
+        protected = re.sub(r'\b(pp|vol|no|art)\.', rf'\1{DOT}', protected, flags=re.IGNORECASE)
+
+        # 10. Proteggi formule tipo "Eq. (1)" o "Tab. 2.1"
+        protected = re.sub(r'\b(Eq|Tab|Fig|Sec)\.?\s*\(?\d', 
+                        lambda m: m.group(0).replace('.', DOT), protected, flags=re.IGNORECASE)
+
+        # 11. Proteggi p-value e statistiche (p < 0.05, r = 0.87)
+        protected = re.sub(r'([=<>≤≥])\s*(\d)', rf'\1 \2', protected)  # Normalizza spazi
+        protected = re.sub(r'(\d)\.(\d{2,})\b', rf'\1{DOT}\2', protected)  # Decimali lunghi
         
         # === SPLIT IN FRASI CON POSIZIONI ===
         # Usiamo finditer per tracciare la posizione di ogni frase
@@ -146,13 +170,20 @@ class Ingester:
         sentences_with_pos = []  # Lista di (sentence_text, start_pos, end_pos)
         last_end = 0
         
+        import re  # Assicura import se necessario in scope locale (ridondante ma sicuro)
+        
         for match in sentence_pattern.finditer(protected):
             # Testo dalla fine dell'ultimo match all'inizio di questo
             sentence = protected[last_end:match.start()].strip()
             if sentence:
-                # Ripristina i punti protetti
+                # Ripristina i punti protetti e calcola posizioni originali
                 clean_sentence = sentence.replace(DOT, '.')
-                sentences_with_pos.append((clean_sentence, last_end, match.start()))
+                
+                # Mappa posizioni da protected (con DOT) a original
+                orig_start = _map_protected_to_original(last_end, protected, DOT)
+                orig_end = _map_protected_to_original(match.start(), protected, DOT)
+                
+                sentences_with_pos.append((clean_sentence, orig_start, orig_end))
             last_end = match.end()
         
         # Ultima frase (dopo l'ultimo separatore)
@@ -160,7 +191,9 @@ class Ingester:
             sentence = protected[last_end:].strip()
             if sentence:
                 clean_sentence = sentence.replace(DOT, '.')
-                sentences_with_pos.append((clean_sentence, last_end, len(protected)))
+                orig_start = _map_protected_to_original(last_end, protected, DOT)
+                orig_end = _map_protected_to_original(len(protected), protected, DOT)
+                sentences_with_pos.append((clean_sentence, orig_start, orig_end))
         
         if not sentences_with_pos:
             return []
@@ -176,17 +209,22 @@ class Ingester:
             
             # Livello 1: Prova a splittare su punto e virgola
             parts = re.split(r'(?<=[;])\s*', segment)
-            if len(parts) > 1:
+            # Verifica che lo split abbia prodotto progresso reale
+            if len(parts) > 1 and not (len(parts) == 1 and parts[0] == segment):
                 for part in parts:
                     part = part.strip()
-                    if part:
+                    if part and len(part) < len(segment):  # Evita ricorsione se no progresso
                         result.extend(split_long_segment(part, current_offset, max_size))
+                    elif part:
+                        # Fallback: passa al livello successivo senza ricorsione qui
+                        result.append((part, current_offset, current_offset + len(part)))
                     current_offset += len(part) + 1
-                return [r for r in result if r[0]]
+                if result:
+                    return [r for r in result if r[0]]
             
             # Livello 2: Prova a splittare su virgola
             parts = re.split(r'(?<=[,])\s*', segment)
-            if len(parts) > 1:
+            if len(parts) > 1 and not (len(parts) == 1 and parts[0] == segment):
                 current = ""
                 chunk_start = current_offset
                 for part in parts:
@@ -200,7 +238,8 @@ class Ingester:
                     current_offset += len(part) + 1
                 if current:
                     result.append((current, chunk_start, chunk_start + len(current)))
-                return [r for r in result if r[0]]
+                if result:
+                    return [r for r in result if r[0]]
             
             # Livello 3: Split su spazi (parole)
             words = segment.split()
@@ -338,6 +377,10 @@ class Ingester:
                 continue
             
             chunk_text, char_start, char_end = chunk_data
+            
+            # Validazione posizioni: devono essere range validi e positivi
+            if char_start < 0 or char_end <= char_start or char_end > len(text):
+                char_start, char_end = -1, -1  # Marca come sconosciute se invalide
             
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
