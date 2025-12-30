@@ -102,14 +102,51 @@ def extract_audio_text(file_path: Path, model_name: str = "base") -> str:
 
 
 def extract_notebook_text(file_path: Path) -> str:
-    """Estrae testo da Jupyter Notebook (code + markdown cells)"""
+    """
+    Estrae testo strutturato da Jupyter Notebook.
+    Include codice, markdown E output con etichette per tipo.
+    """
     import json
     nb = json.loads(file_path.read_text(encoding='utf-8'))
-    texts = []
-    for cell in nb.get('cells', []):
-        source = cell.get('source', [])
-        texts.append(''.join(source) if isinstance(source, list) else source)
-    return '\n\n'.join(texts).strip()
+    parts = []
+    
+    for idx, cell in enumerate(nb.get('cells', []), 1):
+        cell_type = cell.get('cell_type', 'raw')
+        source = ''.join(cell.get('source', []))
+        
+        if not source.strip() and cell_type != 'code':
+            continue
+        
+        # Cella markdown o raw
+        if cell_type == 'markdown':
+            parts.append(f"[CELL {idx} | MARKDOWN]\n{source}")
+        
+        # Cella codice + output
+        elif cell_type == 'code':
+            parts.append(f"[CELL {idx} | CODE]\n```python\n{source}\n```")
+            
+            # Estrai output
+            for out in cell.get('outputs', []):
+                otype = out.get('output_type', '')
+                
+                if otype == 'stream':
+                    text = ''.join(out.get('text', []))
+                    if text.strip():
+                        parts.append(f"[CELL {idx} | OUTPUT]\n{text.strip()}")
+                
+                elif otype in ('execute_result', 'display_data'):
+                    text = ''.join(out.get('data', {}).get('text/plain', []))
+                    if text.strip():
+                        parts.append(f"[CELL {idx} | RESULT]\n{text.strip()}")
+                
+                elif otype == 'error':
+                    err = f"{out.get('ename', 'Error')}: {out.get('evalue', '')}"
+                    parts.append(f"[CELL {idx} | ERROR]\n{err}")
+        
+        else:  # raw o altro
+            parts.append(f"[CELL {idx} | {cell_type.upper()}]\n{source}")
+    
+    return '\n\n---\n\n'.join(parts).strip()
 
 
 def extract_excel_text(file_path: Path) -> str:

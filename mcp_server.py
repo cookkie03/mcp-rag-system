@@ -900,6 +900,124 @@ def hybrid_search(query: str, limit: int = 10, keyword_boost: float = 0.2) -> st
         return f"❌ Errore: {e}"
 
 
+@mcp.tool()
+def get_document_context(source_name: str, chunk_id: int, chunks_before: int = 2, chunks_after: int = 2) -> str:
+    """
+    Recupera un chunk specifico con contesto espanso (chunks adiacenti).
+    Utile quando un singolo chunk non fornisce abbastanza informazioni.
+    
+    Args:
+        source_name: Nome (o parte del nome) del file sorgente
+        chunk_id: ID del chunk centrale da cui partire
+        chunks_before: Quanti chunks precedenti includere (0-10, default: 2)
+        chunks_after: Quanti chunks successivi includere (0-10, default: 10)
+    
+    Returns:
+        Contenuto del chunk richiesto + chunks di contesto, ordinati per posizione
+    """
+    try:
+        # Validazione input
+        chunks_before = max(0, min(10, chunks_before))
+        chunks_after = max(0, min(10, chunks_after))
+        
+        # Recupera tutti i chunks della fonte specificata
+        limit_scan = 500  # Limite ragionevole per un singolo documento
+        
+        points, _ = QDRANT.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=limit_scan,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        # Filtra per source_name (case-insensitive, substring match)
+        source_lower = source_name.lower()
+        matching_chunks = []
+        
+        for p in points:
+            payload = p.payload or {}
+            p_source = payload.get('source', '').lower()
+            p_path = payload.get('source_path', '').lower()
+            
+            if source_lower in p_source or source_lower in p_path:
+                matching_chunks.append(p)
+        
+        if not matching_chunks:
+            return f"❌ Nessun chunk trovato per fonte: '{source_name}'"
+        
+        # Ordina per posizione nel documento (char_start o chunk_id)
+        def get_position(p):
+            payload = p.payload or {}
+            # Preferisci char_start se disponibile, altrimenti chunk_id
+            char_start = payload.get('char_start', -1)
+            if char_start >= 0:
+                return char_start
+            return payload.get('chunk_id', 0)
+        
+        matching_chunks.sort(key=get_position)
+        
+        # Trova l'indice del chunk richiesto
+        target_idx = None
+        for idx, p in enumerate(matching_chunks):
+            p_chunk_id = (p.payload or {}).get('chunk_id', -1)
+            if p_chunk_id == chunk_id:
+                target_idx = idx
+                break
+        
+        if target_idx is None:
+            # Prova a cercare per ID Qdrant
+            for idx, p in enumerate(matching_chunks):
+                if str(p.id) == str(chunk_id):
+                    target_idx = idx
+                    break
+        
+        if target_idx is None:
+            available_ids = [str((p.payload or {}).get('chunk_id', p.id)) for p in matching_chunks[:20]]
+            return (
+                f"❌ Chunk ID {chunk_id} non trovato in '{source_name}'.\n"
+                f"Chunk disponibili (primi 20): {', '.join(available_ids)}"
+            )
+        
+        # Calcola range di chunks da restituire
+        start_idx = max(0, target_idx - chunks_before)
+        end_idx = min(len(matching_chunks), target_idx + chunks_after + 1)
+        
+        context_chunks = matching_chunks[start_idx:end_idx]
+        
+        # Formatta output
+        source_full = (matching_chunks[0].payload or {}).get('source_path', source_name)
+        output = [
+            f"📄 === CONTESTO DOCUMENTO ===\n",
+            f"📁 Fonte: {source_full}",
+            f"🎯 Chunk centrale: {chunk_id} (indice {target_idx})",
+            f"📊 Range: chunks {start_idx} → {end_idx-1} ({len(context_chunks)} chunks totali)",
+            f"{'='*50}\n"
+        ]
+        
+        for idx, p in enumerate(context_chunks):
+            payload = p.payload or {}
+            p_chunk_id = payload.get('chunk_id', '?')
+            char_start = payload.get('char_start', '?')
+            char_end = payload.get('char_end', '?')
+            text = payload.get('text', '').strip()
+            
+            # Evidenzia il chunk centrale
+            is_target = (start_idx + idx) == target_idx
+            marker = ">>> " if is_target else "    "
+            highlight = " [CHUNK RICHIESTO]" if is_target else ""
+            
+            output.append(
+                f"{marker}[Chunk {p_chunk_id}] pos: {char_start}-{char_end}{highlight}\n"
+                f"{text}\n"
+            )
+        
+        return "\n---\n".join(output)
+        
+    except Exception as e:
+        logger.error(f"Errore get_document_context: {e}", exc_info=True)
+        return f"❌ Errore: {e}"
+
+
 # === Entry point ===
 if __name__ == "__main__":
     try:
