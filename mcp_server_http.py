@@ -1,4 +1,5 @@
 """
+C:\\Users\\lucam\\Desktop\\file-search\\.venv\\Scripts\\python.exe C:\\Users\\lucam\\Desktop\\file-search\\mcp_server_http.py
 MCP Server HTTP Wrapper
 Avvia il server RAG in modalità HTTP (SSE) invece di stdio.
 

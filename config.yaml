@@ -87,6 +87,7 @@ extensions:
   audio:
     - ".mp3"
     - ".m4a"
+    - ".opus"
     - ".wav"
     - ".ogg"
     - ".flac"

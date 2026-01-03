@@ -48,7 +48,8 @@ env/
 # Project specific
 *.log
 .cache/
-.ingest_cache/
+.cache/
+*.pem
 
 # Dati sensibili/pesanti
 data/

@@ -30,7 +30,7 @@ def _map_protected_to_original(pos: int, protected: str, dot_placeholder: str) -
 console = Console()
 
 # Directory per il registry locale (traccia file già indicizzati)
-REGISTRY_DIR = Path(__file__).parent / ".ingest_cache"
+REGISTRY_DIR = Path(__file__).parent / ".cache"
 
 
 class Ingester:

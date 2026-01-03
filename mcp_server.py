@@ -36,7 +36,8 @@ from qdrant_client.http import models as qdrant_models
 PROJECT_DIR = Path(__file__).parent.resolve()
 
 # === Configurazione Logging Strutturato ===
-LOG_FILE = PROJECT_DIR / "mcp_server.log"
+LOG_FILE = PROJECT_DIR / ".cache/mcp_server.log"
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',

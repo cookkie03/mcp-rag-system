@@ -73,6 +73,7 @@ python mcp_server.py
 ```
 
 Attendi fino a vedere:
+
 ```
 [MCP] Caricamento modello AI e connessione Qdrant...
 [MCP] Sistema pronto.
@@ -144,6 +145,60 @@ python -c "from mcp_server import search_knowledge_base; print(search_knowledge_
 ## MCP Server - Integrazione IDE
 
 Il server MCP espone il sistema RAG a IDE e assistenti AI.
+
+### Modalità di Connessione
+
+Il server può essere avviato in **3 modalità diverse**:
+
+#### 1. **Modalità STDIO** (default - per Claude Desktop, VS Code, Cursor)
+```bash
+python mcp_server.py
+```
+Comunicazione diretta stdin/stdout - **consigliata per la maggior parte degli IDE**.
+
+#### 2. **Modalità HTTP** (per client web o test)
+```bash
+python mcp_server_http.py
+```
+- **URL**: `http://127.0.0.1:8765/sse`
+- Usa Server-Sent Events (SSE) su HTTP
+- Ideale per sviluppo e testing
+
+#### 3. **Modalità HTTPS** (per Claude Code e client che richiedono SSL)
+```bash
+python mcp_server_https.py
+```
+- **URL**: `https://127.0.0.1:8766/sse`
+- Usa Server-Sent Events (SSE) su HTTPS con certificato auto-firmato
+- Richiesto da alcuni client (es. Claude Code)
+- Genera automaticamente certificati SSL self-signed alla prima esecuzione
+
+#### Avvio Rapido di Entrambi (HTTP + HTTPS)
+
+**Windows**:
+```batch
+start_servers.bat
+```
+
+Questo avvia **contemporaneamente**:
+- Server HTTP su porta `8765`
+- Server HTTPS su porta `8766`
+
+Entrambi condividono lo stesso backend RAG e possono essere usati in parallelo senza conflitti.
+
+**Requisiti per HTTPS**:
+```bash
+pip install cryptography  # Per generazione automatica certificati
+```
+
+Oppure genera manualmente i certificati:
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout key.pem -out cert.pem -days 365 \
+  -subj "/CN=localhost"
+```
+
+---
 
 ### Tool Disponibili
 
@@ -264,10 +319,10 @@ Mostra statistiche del server (query totali, success rate, uptime, ecc.)
 
 ### Perché HTTP?
 
-| Modalità | Pro | Contro |
-|----------|-----|--------|
-| **STDIO** (default) | Setup semplice | Timeout al primo avvio se il modello non è in cache |
-| **HTTP (SSE)** | Nessun timeout, modello pre-caricato | Richiede di avviare il server separatamente |
+| Modalità            | Pro                                  | Contro                                              |
+| ------------------- | ------------------------------------ | --------------------------------------------------- |
+| **STDIO** (default) | Setup semplice                       | Timeout al primo avvio se il modello non è in cache |
+| **HTTP (SSE)**      | Nessun timeout, modello pre-caricato | Richiede di avviare il server separatamente         |
 
 ### Setup HTTP
 
@@ -280,6 +335,7 @@ python mcp_server_http.py
 ```
 
 Attendi fino a vedere:
+
 ```
 [MCP HTTP] Server SSE in ascolto su http://127.0.0.1:8765/sse
 [MCP HTTP] Configura il client con URL: http://127.0.0.1:8765/sse
@@ -454,8 +510,7 @@ file-search/
 **File generati automaticamente**:
 
 - `qdrant_data/` - Dati Qdrant Docker (se volume montato localmente)
-- `.ingest_cache/` - Registry file indicizzati
-- `mcp_server.log` - Log server MCP
+- `.cache/` - Registry file indicizzati & Log server MCP
 
 ---
 
@@ -516,7 +571,7 @@ pip install -r requirements.txt
 
 1. Verifica path corretti in `mcp_config.json` (usa `\\` su Windows)
 2. Riavvia Antigravity completamente
-3. Verifica log: `tail -f mcp_server.log`
+3. Verifica log: `tail -f .cache/mcp_server.log`
 
 **Claude Desktop**:
 
@@ -529,6 +584,7 @@ pip install -r requirements.txt
 **Causa**: Gli IDE (Antigravity, Claude Desktop, VS Code) hanno un timeout per l'avvio del server MCP. Il caricamento dei modelli AI (Jina Embeddings v3 + Cross-Encoder) può richiedere 1-2 minuti alla prima esecuzione, superando questo timeout.
 
 **Sintomi**:
+
 - L'IDE mostra errore di timeout o connessione fallita
 - Il server MCP non compare tra i tool disponibili
 - Messaggi tipo "failed to load model" o "connection closed"
@@ -550,18 +606,21 @@ I modelli vengono salvati nella cache HuggingFace (`~/.cache/huggingface/`). Le 
 **Soluzioni alternative**:
 
 1. **Disabilita reranking** per dimezzare il tempo di avvio:
+
    ```yaml
    # config.yaml
    rerank_enabled: false
    ```
 
 2. **Usa un modello più leggero** (meno preciso ma più veloce):
+
    ```yaml
    # config.yaml
    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
    embedding_dimension: 384
    trust_remote_code: false
    ```
+
    Poi rigenera: `python ingest.py --clean`
 
 3. **Aumenta il timeout dell'IDE** (se supportato), es. per Antigravity:
@@ -577,6 +636,88 @@ I modelli vengono salvati nella cache HuggingFace (`~/.cache/huggingface/`). Le 
      }
    }
    ```
+
+### Problema: "SSL: CERTIFICATE_VERIFY_FAILED" su Claude Desktop
+
+**Causa**: Claude Desktop con connettore HTTP/HTTPS richiede un certificato SSL valido. Se usi un MCP server custom su localhost, OpenSSL potrebbe non avere il file di configurazione necessario.
+
+**Sintomi**:
+
+- Errore SSL durante la connessione tra Claude Desktop e MCP server
+- OpenSSL fallisce con `Can't open openssl.cnf`
+- Message tipo "missing equal sign" nel log di OpenSSL
+
+**Soluzione**: Genera certificati auto-firmati con OpenSSL
+
+1. **Crea file di configurazione OpenSSL** (`openssl.cnf`):
+
+```powershell
+# PowerShell - Esegui uno per uno
+Remove-Item .\openssl.cnf -Force -ErrorAction SilentlyContinue
+
+@'
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+CN = localhost
+
+[v3_req]
+basicConstraints = CA:TRUE
+keyUsage = critical, digitalSignature, keyEncipherment, keyCertSign
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = localhost
+IP.1 = 127.0.0.1
+'@ | Out-File -FilePath .\openssl.cnf -Encoding ASCII
+```
+
+2. **Genera certificato auto-firmato**:
+
+```powershell
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -sha256 -config .\openssl.cnf
+```
+
+3. **Verifica creazione file**:
+
+```powershell
+Get-ChildItem .\key.pem, .\cert.pem -ErrorAction SilentlyContinue
+```
+
+Dovrai vedere:
+
+```
+    Directory: C:\Users\username\Desktop\file-search
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---           2025-01-03  14:30          1704 cert.pem
+-a---           2025-01-03  14:30          1708 key.pem
+```
+
+4. **Configura Claude Desktop** per usare il certificato:
+
+Modifica `~/.claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "rag-search": {
+      "command": "python",
+      "args": ["c:\\path\\to\\file-search\\mcp_server.py"],
+      "env": {
+        "SSL_CERT_FILE": "c:\\path\\to\\file-search\\cert.pem",
+        "SSL_KEY_FILE": "c:\\path\\to\\file-search\\key.pem"
+      }
+    }
+  }
+}
+```
+
+5. **Riavvia Claude Desktop** e verifica che il connettore sia visibile.
 
 ---
 
@@ -611,10 +752,10 @@ I modelli vengono salvati nella cache HuggingFace (`~/.cache/huggingface/`). Le 
 
 ```bash
 # Ultimi errori
-grep ERROR mcp_server.log | tail -20
+grep ERROR .cache/mcp_server.log | tail -20
 
 # Statistiche query
-grep "Query completata" mcp_server.log | wc -l
+grep "Query completata" .cache/mcp_server.log | wc -l
 ```
 
 ### Statistiche Server
@@ -674,7 +815,7 @@ docker start qdrant-rag
 ### Backup Registry
 
 ```bash
-cp .ingest_cache/registry.json registry_backup_$(date +%Y%m%d).json
+cp .cache/registry.json registry_backup_$(date +%Y%m%d).json
 ```
 
 ### Restore
@@ -690,7 +831,7 @@ tar -xzf qdrant_backup_YYYYMMDD.tar.gz
 docker start qdrant-rag
 
 # Restore registry
-cp registry_backup_YYYYMMDD.json .ingest_cache/registry.json
+cp registry_backup_YYYYMMDD.json .cache/registry.json
 ```
 
 ---
