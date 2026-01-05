@@ -1,14 +1,17 @@
 """
-C:\\Users\\lucam\\Desktop\\file-search\\.venv\\Scripts\\python.exe C:\\Users\\lucam\\Desktop\\file-search\\mcp_server_http.py
-MCP Server HTTP Wrapper
-Avvia il server RAG in modalità HTTP (SSE) invece di stdio.
+MCP Server SSE - Server RAG per Claude Code
 
-Questo permette a Claude Code e altri client di connettersi via HTTP,
+Avvia il server RAG in modalità SSE per connettersi a Claude Code,
 evitando il timeout durante il caricamento del modello AI pesante.
 
 Uso:
-    1. Avvia questo script in un terminale separato
-    2. Configura il client MCP per connettersi a http://127.0.0.1:8765/sse
+    python mcp_server_http.py
+    python mcp_server_http.py --host 0.0.0.0 --port 9000
+
+Endpoint: http://127.0.0.1:8765/sse
+
+Configurazione Claude Code:
+    claude mcp add --transport sse --scope user rag-search http://127.0.0.1:8765/sse
 """
 import sys
 from pathlib import Path
@@ -17,31 +20,41 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(PROJECT_DIR))
 
-# Configura host e port PRIMA di importare mcp
-# FastMCP legge da variabili ambiente o settings
+# Configura porta PRIMA di importare mcp
 import os
 os.environ["FASTMCP_PORT"] = "8765"
 
 # Importa il server MCP già configurato
 from mcp_server import mcp, logger
 
-if __name__ == "__main__":
-    try:
-        # Configura le settings del server
-        mcp.settings.host = "127.0.0.1"
-        mcp.settings.port = 8765
-        
-        logger.info(f"Avvio MCP server in modalità SSE su {mcp.settings.host}:{mcp.settings.port}...")
-        print(f"[MCP HTTP] Server SSE in ascolto su http://{mcp.settings.host}:{mcp.settings.port}/sse")
-        print(f"[MCP HTTP] Configura il client con URL: http://127.0.0.1:8765/sse")
+# Configurazione
+HOST = "127.0.0.1"
+PORT = 8765
 
-        # Avvia server con trasporto SSE (HTTP-based)
+if __name__ == "__main__":
+    # Supporta argomenti opzionali per host/port
+    import argparse
+    parser = argparse.ArgumentParser(description="MCP Server SSE")
+    parser.add_argument("--host", default=HOST, help="Host address")
+    parser.add_argument("--port", type=int, default=PORT, help="Port number")
+    args = parser.parse_args()
+    
+    try:
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        
+        endpoint = f"http://{args.host}:{args.port}/sse"
+        
+        logger.info(f"Avvio MCP server SSE su {args.host}:{args.port}...")
+        print(f"[MCP] ✅ Server SSE in ascolto su {endpoint}")
+        print(f"[MCP] Config: claude mcp add --transport sse --scope user rag-search {endpoint}")
+
         mcp.run(transport="sse")
 
     except KeyboardInterrupt:
-        logger.info("Server HTTP interrotto dall'utente")
+        logger.info("Server interrotto dall'utente")
     except Exception as e:
-        logger.critical(f"Errore fatale HTTP: {e}", exc_info=True)
+        logger.critical(f"Errore fatale: {e}", exc_info=True)
         sys.exit(1)
     finally:
-        logger.info("Server HTTP terminato")
+        logger.info("Server terminato")

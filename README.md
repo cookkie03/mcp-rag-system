@@ -151,23 +151,29 @@ Il server MCP espone il sistema RAG a IDE e assistenti AI.
 Il server può essere avviato in **3 modalità diverse**:
 
 #### 1. **Modalità STDIO** (default - per Claude Desktop, VS Code, Cursor)
+
 ```bash
 python mcp_server.py
 ```
+
 Comunicazione diretta stdin/stdout - **consigliata per la maggior parte degli IDE**.
 
 #### 2. **Modalità HTTP** (per client web o test)
+
 ```bash
 python mcp_server_http.py
 ```
+
 - **URL**: `http://127.0.0.1:8765/sse`
 - Usa Server-Sent Events (SSE) su HTTP
 - Ideale per sviluppo e testing
 
 #### 3. **Modalità HTTPS** (per Claude Code e client che richiedono SSL)
+
 ```bash
 python mcp_server_https.py
 ```
+
 - **URL**: `https://127.0.0.1:8766/sse`
 - Usa Server-Sent Events (SSE) su HTTPS con certificato auto-firmato
 - Richiesto da alcuni client (es. Claude Code)
@@ -176,22 +182,26 @@ python mcp_server_https.py
 #### Avvio Rapido di Entrambi (HTTP + HTTPS)
 
 **Windows**:
+
 ```batch
 start_servers.bat
 ```
 
 Questo avvia **contemporaneamente**:
+
 - Server HTTP su porta `8765`
 - Server HTTPS su porta `8766`
 
 Entrambi condividono lo stesso backend RAG e possono essere usati in parallelo senza conflitti.
 
 **Requisiti per HTTPS**:
+
 ```bash
 pip install cryptography  # Per generazione automatica certificati
 ```
 
 Oppure genera manualmente i certificati:
+
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout key.pem -out cert.pem -days 365 \
@@ -273,33 +283,49 @@ Mostra statistiche del server (query totali, success rate, uptime, ecc.)
 
 ---
 
-## Setup Claude Desktop / Claude Code
+## Setup Claude Desktop (App)
 
-### Configurazione
+Claude Desktop è l'applicazione standalone di Anthropic. Supporta due modalità di connessione al server MCP.
 
-**File Windows**: `%APPDATA%\Roaming\Claude\claude_desktop_config.json`
+### Metodo 1: STDIO (semplice, ma con possibile timeout)
 
-**File Linux/Mac**: `~/.config/claude/claude_desktop_config.json`
+⚠️ **Nota**: Al primo avvio, il caricamento del modello può richiedere 1-2 minuti e causare timeout.
+
+**File Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+**File Linux/Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "rag-search": {
-      "command": "C:\\path\\to\\file-search\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\path\\to\\file-search\\mcp_server.py"]
+      "command": "C:\\Users\\lucam\\Desktop\\file-search\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\Users\\lucam\\Desktop\\file-search\\mcp_server.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
     }
   }
 }
 ```
 
-**Linux/Mac**:
+### Metodo 2: SSE Pre-avviato (consigliato, nessun timeout)
+
+**Step 1**: Avvia il server SSE in un terminale separato:
+
+```powershell
+cd C:\Users\lucam\Desktop\file-search
+.\.venv\Scripts\Activate.ps1
+python mcp_server_http.py
+```
+
+**Step 2**: Configura Claude Desktop per connettersi via SSE:
 
 ```json
 {
   "mcpServers": {
     "rag-search": {
-      "command": "/path/to/file-search/.venv/bin/python",
-      "args": ["/path/to/file-search/mcp_server.py"]
+      "url": "http://127.0.0.1:8765/sse"
     }
   }
 }
@@ -308,28 +334,29 @@ Mostra statistiche del server (query totali, success rate, uptime, ecc.)
 ### Utilizzo
 
 1. Salva il file di configurazione
-2. Riavvia Claude Desktop/Code
-3. Il tool `search_knowledge_base` sarà disponibile automaticamente
+2. Riavvia Claude Desktop completamente
 
 ---
 
-## Setup Claude Code (via HTTP - Raccomandato)
+## Setup Claude Code (CLI + VS Code Extension)
 
-⚠️ **Importante per Claude Code**: Il caricamento del modello AI richiede 1-2 minuti. Claude Code ha un timeout di avvio che può causare errori. La soluzione è usare il server in modalità HTTP (SSE).
+⚠️ **Importante**: Il caricamento del modello AI richiede 1-2 minuti. Claude Code ha un timeout che causa errori se il modello non è ancora caricato. La soluzione è avviare il server SSE **prima** di usare Claude Code.
 
-### Perché HTTP?
+### Perché usare il server pre-avviato?
 
-| Modalità            | Pro                                  | Contro                                              |
-| ------------------- | ------------------------------------ | --------------------------------------------------- |
-| **STDIO** (default) | Setup semplice                       | Timeout al primo avvio se il modello non è in cache |
-| **HTTP (SSE)**      | Nessun timeout, modello pre-caricato | Richiede di avviare il server separatamente         |
+| Modalità              | Pro                                  | Contro                                              |
+| --------------------- | ------------------------------------ | --------------------------------------------------- |
+| **STDIO** (default)   | Setup semplice                       | Timeout al primo avvio se il modello non è in cache |
+| **SSE (pre-avviato)** | Nessun timeout, modello già caricato | Richiede avviare il server separatamente            |
 
-### Setup HTTP
+### Setup in 3 Step
 
-**Step 1**: Avvia il server in un terminale separato (una volta sola):
+#### Step 1: Avvia il server SSE (una sola volta)
+
+Apri un terminale e lascialo in esecuzione:
 
 ```powershell
-cd C:\path\to\file-search
+cd C:\Users\lucam\Desktop\file-search
 .\.venv\Scripts\Activate.ps1
 python mcp_server_http.py
 ```
@@ -337,27 +364,69 @@ python mcp_server_http.py
 Attendi fino a vedere:
 
 ```
-[MCP HTTP] Server SSE in ascolto su http://127.0.0.1:8765/sse
-[MCP HTTP] Configura il client con URL: http://127.0.0.1:8765/sse
+[MCP] ✅ Server SSE in ascolto su http://127.0.0.1:8765/sse
 ```
 
-**Step 2**: Configura Claude Code per usare HTTP:
+#### Step 2: Configura Claude Code CLI
 
-**File (Mac/Linux)**: `~/.claude/mcp.json`  
-**File (Windows)**: `%USERPROFILE%\.claude\mcp.json`
+In un **altro terminale**, esegui:
 
-```json
-{
-  "mcpServers": {
-    "rag-search": {
-      "type": "sse",
-      "url": "http://127.0.0.1:8765/sse"
-    }
-  }
-}
+```powershell
+# Rimuovi eventuale configurazione precedente
+claude mcp remove rag-search --scope user
+
+# Aggiungi il server SSE
+claude mcp add --transport sse --scope user rag-search http://127.0.0.1:8765/sse
+
+# Verifica la connessione
+claude mcp list
 ```
 
-**Step 3**: Riavvia Claude Code. I tool RAG saranno disponibili immediatamente senza timeout.
+Dovresti vedere:
+
+```
+rag-search: http://127.0.0.1:8765/sse (SSE) - ✓ Connected
+```
+
+#### Step 3: Usa i tool RAG
+
+Ora puoi usare Claude Code normalmente. I tool RAG saranno disponibili automaticamente:
+
+```bash
+# Esempio di utilizzo in Claude Code
+> Cerca nei documenti indicizzati informazioni su "machine learning"
+```
+
+### Comandi utili
+
+| Comando                                                                            | Descrizione                           |
+| ---------------------------------------------------------------------------------- | ------------------------------------- |
+| `claude mcp list`                                                                  | Mostra tutti i server MCP configurati |
+| `claude mcp remove rag-search --scope user`                                        | Rimuove il server                     |
+| `claude mcp add --transport sse --scope user rag-search http://127.0.0.1:8765/sse` | Aggiunge il server                    |
+
+### Tool disponibili in Claude Code
+
+Quando il server è connesso, Claude ha accesso a questi tool:
+
+- **`search_knowledge_base`**: Ricerca semantica nei documenti
+- **`list_sources`**: Elenco file indicizzati
+- **`get_server_stats`**: Statistiche del server
+- **`search_by_source`**: Ricerca filtrata per fonte
+- **`get_document_by_id`**: Recupera documento specifico
+- **`get_document_context`**: Ottiene contesto attorno a un chunk
+
+### Troubleshooting
+
+**Problema**: `Failed to connect`
+
+- Verifica che il server SSE sia in esecuzione nel terminale
+- Controlla che la porta 8765 non sia usata da altri processi
+
+**Problema**: Tool non disponibili
+
+- Riavvia Claude Code (chiudi e riapri VS Code)
+- Verifica con `claude mcp list` che il server sia connesso
 
 ---
 
