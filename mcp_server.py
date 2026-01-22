@@ -271,7 +271,7 @@ except Exception as e:
     sys.exit(1)
 
 # === Server MCP ===
-mcp = FastMCP("rag-search")
+mcp = FastMCP(CONFIG.get('mcp_server_name', 'rag-search'))
 
 
 # === Retry Decorator per Query Robuste ===

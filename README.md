@@ -289,7 +289,7 @@ Claude Desktop è l'applicazione standalone di Anthropic. Supporta due modalità
 
 ### Metodo 1: STDIO (semplice, ma con possibile timeout)
 
-⚠️ **Nota**: Al primo avvio, il caricamento del modello può richiedere 1-2 minuti e causare timeout.
+⚠️ **Nota**: Al primo avvio, il caricamento del modello può richiedere 1-2 minuti e causare timeout. Per aggirare il problema eseguire da terminale mcp_server.py, in modo tale da mantenere in memoria il modello ed aggirare il timeout di claude.
 
 **File Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
@@ -299,8 +299,8 @@ Claude Desktop è l'applicazione standalone di Anthropic. Supporta due modalità
 {
   "mcpServers": {
     "rag-search": {
-      "command": "C:\\Users\\lucam\\Desktop\\file-search\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\Users\\lucam\\Desktop\\file-search\\mcp_server.py"],
+      "command": "C:\\Path\\to\\file-search\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\Path\\to\\file-search\\mcp_server.py"],
       "env": {
         "PYTHONUNBUFFERED": "1"
       }

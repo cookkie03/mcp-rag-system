@@ -43,6 +43,9 @@ model: "gemini-3-pro-preview"
 temperature: 0.2
 max_tokens: 2048
 
+# ===== SERVER MCP =====
+mcp_server_name: "rag-docs"
+
 # ===== AUDIO (WHISPER) =====
 whisper_model: "turbo"
 
