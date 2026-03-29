@@ -131,14 +131,14 @@ class LLMClient:
 
     def __init__(self, config: dict):
         llm_cfg = config.get('llm', {})
-        self.model = llm_cfg.get('model', 'qwen3:8b')
+        self.model = llm_cfg.get('model', 'qwen3.5:4b')
         self.temperature = llm_cfg.get('temperature', 0.3)
-        self.max_tokens = llm_cfg.get('max_tokens', 4096)
+        self.max_tokens = llm_cfg.get('max_tokens', 32768)
+        self.context_window = llm_cfg.get('context_window', 32768)
         self.system_prompt = llm_cfg.get('system_prompt', '')
 
         base_url = llm_cfg.get('base_url', 'http://localhost:11434/v1')
-        # API key: env var LLM_API_KEY sovrascrive config.yaml
-        api_key = os.environ.get('LLM_API_KEY') or llm_cfg.get('api_key', 'ollama')
+        api_key = llm_cfg.get('api_key', 'ollama')
 
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         logger.info(f"LLM: {base_url} (modello: {self.model})")

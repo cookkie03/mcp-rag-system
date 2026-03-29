@@ -33,8 +33,9 @@ class Chat:
         self.memory = MemoryManager(config)
         self.writer = MarkdownWriter(config.get('output_path', './output'))
 
+        chat_cfg = config.get('chat', {})
         self.messages = []  # Storico conversazione
-        self.max_history = 20
+        self.max_history = chat_cfg.get('max_history', 20)
 
         # Tool handlers: il LLM chiama questi tramite tool calling
         self.tool_handlers = {

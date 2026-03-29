@@ -18,11 +18,6 @@ from utils import setup_logging, get_active_embedding_config
 
 logger = setup_logging("rag.search")
 
-# Costanti
-MAX_QUERY_LENGTH = 2000
-MIN_QUERY_LENGTH = 3
-MAX_LIMIT = 50
-
 
 def _retry(max_attempts=2, delay=0.5):
     """Decorator retry per operazioni con errori transitori"""
@@ -71,8 +66,9 @@ class SearchEngine:
         self.similarity_threshold = search_cfg.get('similarity_threshold', 0.7)
         self.adaptive_threshold = search_cfg.get('adaptive_threshold', False)
         self.adaptive_min = search_cfg.get('adaptive_threshold_min', 0.5)
-        self.adaptive_max = search_cfg.get('adaptive_threshold_max', 0.9)
-
+        self.adaptive_max = search_cfg.get('adaptive_threshold_max', 0.9)        self.max_query_length = search_cfg.get('max_query_length', 2000)
+        self.min_query_length = search_cfg.get('min_query_length', 3)
+        self.max_limit = search_cfg.get('max_limit', 50)
         # Embedding model
         emb_cfg = get_active_embedding_config(config)
         logger.info(f"Caricamento embedding: {emb_cfg.get('model', '?')}")
@@ -82,11 +78,16 @@ class SearchEngine:
 
         # Qdrant
         mode = qdrant_cfg.get('mode', 'http')
-        if mode == 'http':
+        if qdrant_cfg.get('url'):
+            self.qdrant = QdrantClient(
+                url=qdrant_cfg['url'],
+                timeout=qdrant_cfg.get('timeout', 30)
+            )
+        elif mode == 'http':
             self.qdrant = QdrantClient(
                 host=qdrant_cfg.get('host', 'localhost'),
                 port=qdrant_cfg.get('port', 6333),
-                timeout=30
+                timeout=qdrant_cfg.get('timeout', 30)
             )
         else:
             self.qdrant = QdrantClient(path=qdrant_cfg.get('local_path', './qdrant_storage'))
@@ -109,12 +110,12 @@ class SearchEngine:
         if not query or not isinstance(query, str):
             return "Query deve essere una stringa non vuota"
         q = query.strip()
-        if len(q) < MIN_QUERY_LENGTH:
-            return f"Query troppo corta (min {MIN_QUERY_LENGTH} char)"
-        if len(q) > MAX_QUERY_LENGTH:
-            return f"Query troppo lunga (max {MAX_QUERY_LENGTH} char)"
-        if not isinstance(limit, int) or limit <= 0 or limit > MAX_LIMIT:
-            return f"Limit deve essere intero 1-{MAX_LIMIT}"
+        if len(q) < self.min_query_length:
+            return f"Query troppo corta (min {self.min_query_length} char)"
+        if len(q) > self.max_query_length:
+            return f"Query troppo lunga (max {self.max_query_length} char)"
+        if not isinstance(limit, int) or limit <= 0 or limit > self.max_limit:
+            return f"Limit deve essere intero 1-{self.max_limit}"
         return None
 
     def _encode(self, query: str) -> list:

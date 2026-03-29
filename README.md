@@ -22,126 +22,120 @@ main.py (entry point)
 - **Tool Calling nativo**: il LLM decide autonomamente quando usare RAG, memoria, o creare file
 - **Dual embedding multimodale**: Jina v4 (primario) + NVIDIA Nemotron (secondario)
 - **mem0 Memory**: memoria persistente condivisa con la knowledge base RAG
-- **dots.ocr**: unico strumento per PDF, immagini, documenti
+- **dots.ocr multilingua**: supporto nativo per Italiano e Inglese
 - **Whisper turbo**: trascrizione audio
 - **Reranking**: Jina Reranker v2 con threshold adattivo
 - **Generazione Markdown**: crea/modifica file .md su richiesta
-- **Config centralizzata**: un solo file `config.yaml`
-- **Docker Compose**: avvio completo con un comando
+- **Configurazione flessibile**: mix di `config.yaml` e variabili d'ambiente (.env)
+- **Makefile**: gestione semplificata di tutti i processi
 
 ## Quick Start
 
-### 1. Avvio con Docker Compose
+### 1. Setup Iniziale
 
 ```bash
-# Avvia Qdrant + Ollama + RAG
-docker-compose up -d qdrant ollama
+# Configura l'ambiente
+cp .env.example .env
 
-# Pull del modello LLM
-docker exec -it mcp-rag-system-ollama-1 ollama pull qwen3:8b
-docker exec -it mcp-rag-system-ollama-1 ollama pull nomic-embed-text
-
-# Indicizza documenti (metti i file in ./data/)
-docker-compose run rag ingest
-
-# Avvia chat
-docker-compose run -it rag chat
+# Avvia i servizi (Qdrant + Ollama) e scarica i modelli LLM
+make install
 ```
 
-### 2. Avvio locale (senza Docker)
+### 2. Indicizzazione e Chat
 
 ```bash
-# Prerequisiti: Qdrant e Ollama in esecuzione
-# Qdrant: docker run -p 6333:6333 qdrant/qdrant
-# Ollama: ollama serve
+# Metti i tuoi file in ./data/ e indicizzali
+make ingest
 
-# Setup Python
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-pip install -r requirements.txt
-
-# Configura (modifica config.yaml se necessario)
-# In locale, cambia qdrant.host a "localhost" e llm.base_url a "http://localhost:11434/v1"
-
-# Indicizza documenti
-python main.py ingest
-
-# Chat
-python main.py chat
+# Avvia la chat interattiva
+make chat
 ```
 
 ## Uso
 
-### Comandi CLI
+### Comandi Rapidi (Makefile)
+
+| Comando        | Descrizione                                     |
+| -------------- | ----------------------------------------------- |
+| `make install` | Setup iniziale: avvia servizi e scarica modelli |
+| `make start`   | Avvia i servizi (se già installati)             |
+| `make ingest`  | Indicizza nuovi documenti in `./data/`          |
+| `make chat`    | Avvia l'interfaccia di chat                     |
+| `make status`  | Mostra statistiche del database vettoriale      |
+| `make stop`    | Ferma tutti i servizi                           |
+| `make clean`   | Rimuove container, volumi e file generati       |
+
+### Ricerca Veloce da CLI
+
+Puoi effettuare una ricerca rapida senza entrare in chat:
 
 ```bash
-python main.py chat             # Chat interattiva con tool calling
-python main.py ingest           # Indicizza documenti da ./data/
-python main.py ingest --clean   # Re-indicizza da zero
-python main.py search "query"   # Ricerca veloce
-python main.py status           # Statistiche sistema
-python main.py sources          # Lista documenti indicizzati
+make search QUERY="tua domanda"
 ```
 
 ### Comandi Chat
 
-| Comando      | Descrizione |
-|-------------|-------------|
-| `/help`     | Mostra comandi |
-| `/exit`     | Esci |
-| `/stats`    | Statistiche sistema |
-| `/sources`  | Lista documenti indicizzati |
-| `/save <f>` | Salva conversazione in markdown |
-| `/files`    | Lista file markdown generati |
-| `/memory`   | Mostra memorie salvate |
-| `/clear`    | Reset contesto conversazione |
-| `/clearmem` | Cancella tutta la memoria |
+All'interno della sessione di chat (`make chat`), puoi usare i seguenti comandi:
 
-### Tool Calling
-
-Il LLM decide autonomamente quali tool usare ad ogni richiesta:
-
-| Tool | Quando viene usato |
-|------|-------------------|
-| `search_documents` | Domande su documenti/contenuti caricati |
-| `search_memory` | Contesto da conversazioni passate, preferenze, fatti appresi |
-| `save_memory` | L'utente condivide info da ricordare |
-| `create_file` | Richiesta di creare/scrivere un file |
-| `edit_file` | Richiesta di modificare un file esistente |
+| Comando     | Descrizione                                              |
+| ----------- | -------------------------------------------------------- |
+| `/help`     | Mostra la lista dei comandi                              |
+| `/stats`    | Statistiche del sistema                                  |
+| `/sources`  | Lista dei documenti indicizzati                          |
+| `/save <n>` | Salva la conversazione in un file markdown               |
+| `/memory`   | Visualizza i fatti salvati nella memoria a lungo termine |
+| `/clear`    | Resetta il contesto della conversazione attuale          |
+| `/exit`     | Chiude la sessione                                       |
 
 ## Configurazione
 
-Tutto in `config.yaml`. Sezioni principali:
+Il sistema utilizza una configurazione gerarchica. Le variabili d'ambiente hanno la precedenza su `config.yaml`.
 
-- **llm**: URL + API key per qualsiasi endpoint OpenAI-compatible
+### Variabili d'Ambiente (.env)
+
+| Variabile        | Descrizione                            | Default (config.yaml)    |
+| ---------------- | -------------------------------------- | ------------------------ |
+| `LLM_API_KEY`    | API Key per LLM                        | `ollama`                 |
+| `LLM_BASE_URL`   | Endpoint API OpenAI-compatible         | `http://ollama:11434/v1` |
+| `LLM_MODEL`      | Modello LLM da utilizzare              | `qwen3.5:4b`             |
+| `QDRANT_HOST`    | Host di Qdrant                         | `qdrant`                 |
+| `QDRANT_PORT`    | Port di Qdrant                         | `6333`                   |
+| `QDRANT_URL`     | URL completo di Qdrant (es. per Cloud) | -                        |
+| `DOCUMENTS_PATH` | Percorso cartella documenti            | `./data`                 |
+| `OUTPUT_PATH`    | Percorso cartella output markdown      | `./output`               |
+
+### File config.yaml
+
+Tutto il resto è configurabile in `config.yaml`:
+
 - **embeddings**: Dual model (Jina v4 / Nemotron), modalita' auto/primary/secondary
-- **qdrant**: Vector database (Docker o locale)
 - **search**: Top-k, threshold adattivo, reranking Jina v2
 - **memory**: mem0 con Qdrant + Ollama locale
-- **extensions**: Formati file supportati
+- **ocr**: Configurazione engine e lingue (default: `en`, `it`)
+- **extensions**: Formati file supportati per categoria
 
 ## Stack Tecnologico
 
-| Componente | Tecnologia |
-|-----------|-----------|
-| LLM | Qualsiasi OpenAI-compatible (Ollama, LM Studio, vLLM) |
-| Embedding | Jina v4 (1024D) / NVIDIA Nemotron (4096D) |
-| Reranking | Jina Reranker v2 Multilingual |
-| Vector DB | Qdrant |
-| Memoria | mem0 |
-| OCR | dots.ocr (rednote-hilab) |
-| Audio | Whisper turbo |
-| Framework | DataPizza |
+| Componente | Tecnologia                                            |
+| ---------- | ----------------------------------------------------- |
+| LLM        | Qualsiasi OpenAI-compatible (Ollama, LM Studio, vLLM) |
+| Embedding  | Jina v4 (1024D) / NVIDIA Nemotron (4096D)             |
+| Reranking  | Jina Reranker v2 Multilingual                         |
+| Vector DB  | Qdrant                                                |
+| Memoria    | mem0                                                  |
+| OCR        | dots.ocr (rednote-hilab)                              |
+| Audio      | Whisper turbo                                         |
+| Framework  | DataPizza                                             |
 
 ## Formati Supportati
 
-| Categoria | Estensioni | Estrazione |
-|-----------|-----------|-----------|
-| Testo/Codice | .txt, .md, .py, .js, .ts, .json, .yaml, .html, .css, .csv, .java, .cpp, .go, .rb, .php, .sh, .sql | Lettura diretta |
-| PDF | .pdf | dots.ocr |
-| Immagini | .png, .jpg, .jpeg, .gif, .bmp, .tiff, .webp | dots.ocr |
-| Audio | .mp3, .m4a, .opus, .wav, .ogg, .flac | Whisper turbo |
-| Video | .mp4, .mkv, .avi, .mov, .webm | Whisper (audio) + dots.ocr (keyframes) |
-| Notebook | .ipynb | Parsing JSON celle |
-| Excel | .xlsx, .xls | openpyxl |
-| Presentazioni | .pptx | python-pptx |
+| Categoria     | Estensioni                                                                                        | Estrazione                             |
+| ------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| Testo/Codice  | .txt, .md, .py, .js, .ts, .json, .yaml, .html, .css, .csv, .java, .cpp, .go, .rb, .php, .sh, .sql | Lettura diretta                        |
+| PDF           | .pdf                                                                                              | dots.ocr                               |
+| Immagini      | .png, .jpg, .jpeg, .gif, .bmp, .tiff, .webp                                                       | dots.ocr                               |
+| Audio         | .mp3, .m4a, .opus, .wav, .ogg, .flac                                                              | Whisper turbo                          |
+| Video         | .mp4, .mkv, .avi, .mov, .webm                                                                     | Whisper (audio) + dots.ocr (keyframes) |
+| Notebook      | .ipynb                                                                                            | Parsing JSON celle                     |
+| Excel         | .xlsx, .xls                                                                                       | openpyxl                               |
+| Presentazioni | .pptx                                                                                             | python-pptx                            |

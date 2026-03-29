@@ -59,7 +59,9 @@ class Ingester:
 
         # Qdrant
         mode = qdrant_cfg.get('mode', 'http')
-        if mode == 'http':
+        if qdrant_cfg.get('url'):
+            self.qdrant = QdrantClient(url=qdrant_cfg['url'])
+        elif mode == 'http':
             self.qdrant = QdrantClient(
                 host=qdrant_cfg.get('host', 'localhost'),
                 port=qdrant_cfg.get('port', 6333)

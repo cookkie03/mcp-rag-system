@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # === dots.ocr (PDF, immagini, documenti) ===
 
-def extract_with_dots_ocr(file_path: Path) -> str:
+def extract_with_dots_ocr(file_path: Path, languages: list = None) -> str:
     """Estrae testo da qualsiasi documento/immagine usando dots.ocr.
 
     Supporta nativamente: PDF, PNG, JPG, TIFF, BMP, WEBP, ecc.
@@ -26,7 +26,8 @@ def extract_with_dots_ocr(file_path: Path) -> str:
     """
     try:
         from dots_ocr import DotsOCR
-        ocr = DotsOCR()
+        # Inizializza con lingue se supportate, altrimenti default
+        ocr = DotsOCR(languages=languages) if languages else DotsOCR()
         result = ocr.recognize(str(file_path))
         if isinstance(result, list):
             return '\n'.join(str(r) for r in result).strip()
@@ -40,7 +41,7 @@ def extract_with_dots_ocr(file_path: Path) -> str:
 
 # === Whisper (Audio) ===
 
-def extract_audio_text(file_path: Path, model_name: str = "turbo") -> str:
+def extract_audio_text(file_path: Path, model_name: str = "turbo", language: str = None) -> str:
     """Trascrive audio usando Whisper turbo (richiede FFmpeg).
 
     Nessun embedding model gestisce audio raw → Whisper e' necessario.
@@ -50,11 +51,11 @@ def extract_audio_text(file_path: Path, model_name: str = "turbo") -> str:
     except ImportError:
         raise ImportError("pip install openai-whisper  (richiede FFmpeg)")
 
-    logger.info(f"Whisper '{model_name}': trascrizione {file_path.name}...")
+    logger.info(f"Whisper '{model_name}': trascrizione {file_path.name} (lingua: {language or 'auto'})...")
     model = whisper.load_model(model_name)
     result = model.transcribe(
         str(file_path),
-        language=None,          # Auto-detect lingua
+        language=language,      # Auto-detect se None
         task="transcribe",
         verbose=False,
     )
@@ -107,7 +108,9 @@ def extract_video_text(file_path: Path, config: dict = None) -> str:
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                 cv2.imwrite(tmp.name, frame)
                 try:
-                    frame_text = extract_with_dots_ocr(Path(tmp.name))
+                    ocr_cfg = (config or {}).get('ocr', {})
+                    languages = ocr_cfg.get('languages', ['en'])
+                    frame_text = extract_with_dots_ocr(Path(tmp.name), languages=languages)
                     if frame_text:
                         timestamp = fi / fps
                         parts.append(f"[FRAME {timestamp:.0f}s]\n{frame_text}")
@@ -231,11 +234,17 @@ def extract_text(file_path: Path, config: dict = None) -> tuple[str, str | None]
     try:
         # dots.ocr per PDF e immagini
         if ext in pdf_ext or ext in image_ext:
-            return extract_with_dots_ocr(file_path), None
+            ocr_cfg = cfg.get('ocr', {})
+            languages = ocr_cfg.get('languages', ['en'])
+            return extract_with_dots_ocr(file_path, languages=languages), None
 
         # Whisper per audio
         if ext in audio_ext:
-            return extract_audio_text(file_path, cfg.get('whisper_model', 'turbo')), None
+            return extract_audio_text(
+                file_path, 
+                cfg.get('whisper_model', 'turbo'),
+                cfg.get('whisper_language')
+            ), None
 
         # Video: audio + keyframes
         if ext in video_ext:

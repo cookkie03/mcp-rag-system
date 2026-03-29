@@ -1,17 +1,58 @@
 """Utility functions - Configurazione e helper condivisi"""
 
 import logging
+import os
 import yaml
 from pathlib import Path
+from dotenv import load_dotenv
 
 
 def load_config(config_path="config.yaml") -> dict:
-    """Carica configurazione YAML centralizzata"""
+    """Carica configurazione YAML centralizzata con override da .env e variabili d'ambiente.
+
+    Priorita':
+    1. Variabili d'ambiente (es. LLM_API_KEY)
+    2. File .env
+    3. File config.yaml
+    """
+    # Carica .env se presente
+    load_dotenv()
+
     config_path = Path(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config non trovata: {config_path}")
+
     with open(config_path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f) or {}
+
+    # Override manuale per i parametri piu' comuni
+    # Percorsi
+    if os.getenv('DOCUMENTS_PATH'):
+        config['documents_path'] = os.getenv('DOCUMENTS_PATH')
+    if os.getenv('OUTPUT_PATH'):
+        config['output_path'] = os.getenv('OUTPUT_PATH')
+
+    # LLM
+    if 'llm' not in config:
+        config['llm'] = {}
+    if os.getenv('LLM_API_KEY'):
+        config['llm']['api_key'] = os.getenv('LLM_API_KEY')
+    if os.getenv('LLM_BASE_URL'):
+        config['llm']['base_url'] = os.getenv('LLM_BASE_URL')
+    if os.getenv('LLM_MODEL'):
+        config['llm']['model'] = os.getenv('LLM_MODEL')
+
+    # Qdrant
+    if 'qdrant' not in config:
+        config['qdrant'] = {}
+    if os.getenv('QDRANT_HOST'):
+        config['qdrant']['host'] = os.getenv('QDRANT_HOST')
+    if os.getenv('QDRANT_PORT'):
+        config['qdrant']['port'] = int(os.getenv('QDRANT_PORT'))
+    if os.getenv('QDRANT_URL'):
+        config['qdrant']['url'] = os.getenv('QDRANT_URL')
+
+    return config
 
 
 def setup_logging(name: str = "rag", level: str = "INFO") -> logging.Logger:
